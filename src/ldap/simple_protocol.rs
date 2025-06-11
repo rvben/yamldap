@@ -122,25 +122,41 @@ impl Decoder for SimpleLdapCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if src.len() < 2 {
+        // Fast path: check minimum size
+        if src.len() < 5 {
             return Ok(None);
         }
         
-        let mut cursor = Cursor::new(&src[..]);
-        
-        // Check for SEQUENCE tag (0x30)
-        if cursor.get_u8() != 0x30 {
+        // Peek at the message to determine size without copying
+        if src[0] != 0x30 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Expected SEQUENCE"));
         }
         
-        // Read message length
-        let msg_length = Self::read_length(&mut cursor)?;
-        let header_len = cursor.position() as usize;
-        let total_len = header_len + msg_length;
+        // Quick length check
+        let (msg_length, header_len) = if src[1] & 0x80 == 0 {
+            // Short form
+            (src[1] as usize, 2)
+        } else {
+            let num_octets = (src[1] & 0x7f) as usize;
+            if src.len() < 2 + num_octets {
+                return Ok(None);
+            }
+            
+            let mut length = 0usize;
+            for i in 0..num_octets {
+                length = (length << 8) | (src[2 + i] as usize);
+            }
+            (length, 2 + num_octets)
+        };
         
+        let total_len = header_len + msg_length;
         if src.len() < total_len {
             return Ok(None); // Need more data
         }
+        
+        // Now parse the message
+        let mut cursor = Cursor::new(&src[..total_len]);
+        cursor.set_position(header_len as u64); // Skip the header we already parsed
         
         // Read message ID
         let message_id = Self::read_integer(&mut cursor)?;

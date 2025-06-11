@@ -1,5 +1,4 @@
-version: '3.8'
-
+---
 services:
   yamldap:
     build: .
@@ -10,7 +9,7 @@ services:
     environment:
       - RUST_LOG=info
     command: ["yamldap", "-f", "/data/directory.yaml", "--allow-anonymous"]
-    
+
   # Optional: LDAP admin tool for testing
   ldapadmin:
     image: osixia/phpldapadmin:latest

@@ -1,4 +1,5 @@
 use super::entry::LdapEntry;
+use super::index::{AttributeIndex, ObjectClassIndex};
 use crate::yaml::{YamlDirectory, YamlSchema};
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -8,6 +9,10 @@ pub struct Directory {
     pub base_dn: String,
     entries: Arc<DashMap<String, LdapEntry>>,
     pub schema: YamlSchema,
+    // Indexes for fast lookups
+    uid_index: AttributeIndex,
+    cn_index: AttributeIndex,
+    objectclass_index: ObjectClassIndex,
 }
 
 impl Directory {
@@ -16,6 +21,9 @@ impl Directory {
             base_dn,
             entries: Arc::new(DashMap::new()),
             schema,
+            uid_index: AttributeIndex::new(),
+            cn_index: AttributeIndex::new(),
+            objectclass_index: ObjectClassIndex::new(),
         }
     }
     
@@ -31,7 +39,26 @@ impl Directory {
     }
     
     pub fn add_entry(&self, entry: LdapEntry) {
-        self.entries.insert(entry.dn.to_lowercase(), entry);
+        let dn_lower = entry.dn.to_lowercase();
+        
+        // Update indexes
+        if let Some(uid_attr) = entry.get_attribute("uid") {
+            for value in &uid_attr.values {
+                self.uid_index.insert("uid", &value.as_string(), &dn_lower);
+            }
+        }
+        
+        if let Some(cn_attr) = entry.get_attribute("cn") {
+            for value in &cn_attr.values {
+                self.cn_index.insert("cn", &value.as_string(), &dn_lower);
+            }
+        }
+        
+        for oc in &entry.object_classes {
+            self.objectclass_index.insert(oc, &dn_lower);
+        }
+        
+        self.entries.insert(dn_lower, entry);
     }
     
     pub fn get_entry(&self, dn: &str) -> Option<LdapEntry> {
