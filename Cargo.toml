@@ -1,0 +1,58 @@
+[package]
+name = "yamldap"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ruben J. Jongejan <ruben.jongejan@gmail.com>"]
+description = "A lightweight LDAP server that serves directory data from YAML files"
+license = "MIT"
+repository = "https://github.com/rvben/yamldap"
+readme = "README.md"
+
+[dependencies]
+# Async runtime and networking
+tokio = { version = "1.40", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1.7"
+futures = "0.3"
+
+# LDAP protocol and ASN.1 encoding
+ldap3_proto = "0.4"  # For LDAP protocol definitions
+rasn = "0.18"  # ASN.1 codec
+rasn-ldap = "0.18"  # LDAP ASN.1 definitions
+
+# YAML and data processing
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+
+# CLI and configuration
+clap = { version = "4.5", features = ["derive"] }
+config = "0.14"
+
+# Cryptography and password handling
+bcrypt = "0.15"
+sha1 = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+
+# Error handling and logging
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# File watching and utilities
+notify = "6.1"
+regex = "1.10"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6.0"
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = "0.5"
+tempfile = "3.10"
+ldap3 = "0.11"
+
+[[bin]]
+name = "yamldap"
+path = "src/main.rs"

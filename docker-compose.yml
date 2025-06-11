@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  yamldap:
+    build: .
+    ports:
+      - "389:389"
+    volumes:
+      - ./examples/sample_directory.yaml:/data/directory.yaml:ro
+    environment:
+      - RUST_LOG=info
+    command: ["yamldap", "-f", "/data/directory.yaml", "--allow-anonymous"]
+    
+  # Optional: LDAP admin tool for testing
+  ldapadmin:
+    image: osixia/phpldapadmin:latest
+    environment:
+      - PHPLDAPADMIN_LDAP_HOSTS=yamldap
+      - PHPLDAPADMIN_HTTPS=false
+    ports:
+      - "8080:80"
+    depends_on:
+      - yamldap

@@ -1,0 +1,61 @@
+directory:
+  base_dn: "dc=example,dc=com"
+
+schema:
+  object_classes:
+    - name: "person"
+      attributes: ["cn", "sn", "userPassword", "mail"]
+    - name: "groupOfNames"
+      attributes: ["cn", "member"]
+
+entries:
+  # Root entry
+  - dn: "dc=example,dc=com"
+    objectClass: ["top", "domain"]
+    dc: "example"
+
+  # Organizational Units
+  - dn: "ou=users,dc=example,dc=com"
+    objectClass: ["top", "organizationalUnit"]
+    ou: "users"
+    description: "User accounts"
+
+  - dn: "ou=groups,dc=example,dc=com"
+    objectClass: ["top", "organizationalUnit"]
+    ou: "groups"
+    description: "Group definitions"
+
+  # Users
+  - dn: "uid=jdoe,ou=users,dc=example,dc=com"
+    objectClass: ["top", "person", "inetOrgPerson"]
+    uid: "jdoe"
+    cn: "John Doe"
+    sn: "Doe"
+    givenName: "John"
+    mail: "john.doe@example.com"
+    userPassword: "password123"  # Plain text for testing
+
+  - dn: "uid=jsmith,ou=users,dc=example,dc=com"
+    objectClass: ["top", "person", "inetOrgPerson"]
+    uid: "jsmith"
+    cn: "Jane Smith"
+    sn: "Smith"
+    givenName: "Jane"
+    mail: "jane.smith@example.com"
+    userPassword: "{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g="  # SHA hash of "secret"
+
+  # Groups
+  - dn: "cn=developers,ou=groups,dc=example,dc=com"
+    objectClass: ["top", "groupOfNames"]
+    cn: "developers"
+    description: "Development team"
+    member:
+      - "uid=jdoe,ou=users,dc=example,dc=com"
+
+  - dn: "cn=admins,ou=groups,dc=example,dc=com"
+    objectClass: ["top", "groupOfNames"]
+    cn: "admins"
+    description: "System administrators"
+    member:
+      - "uid=jdoe,ou=users,dc=example,dc=com"
+      - "uid=jsmith,ou=users,dc=example,dc=com"
