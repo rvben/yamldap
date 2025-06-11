@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
 use yamldap::directory::{Directory, storage::SearchScope};
 use yamldap::yaml::{YamlDirectory, YamlEntry, YamlSchema};
-use yamldap::ldap::filters::{parse_ldap_filter, LdapFilter};
+use yamldap::ldap::filters::parse_ldap_filter;
 use std::collections::HashMap;
 
 fn create_test_directory(num_users: usize) -> Directory {

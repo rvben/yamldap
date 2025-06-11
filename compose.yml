@@ -1,14 +1,17 @@
 ---
 services:
   yamldap:
-    build: .
+    build: 
+      context: .
+      platforms:
+        - linux/amd64
     ports:
       - "389:389"
     volumes:
       - ./examples/sample_directory.yaml:/data/directory.yaml:ro
     environment:
       - RUST_LOG=info
-    command: ["yamldap", "-f", "/data/directory.yaml", "--allow-anonymous"]
+    command: ["-f", "/data/directory.yaml", "--allow-anonymous"]
 
   # Optional: LDAP admin tool for testing
   ldapadmin:
