@@ -56,7 +56,7 @@ impl From<SchemaConfig> for YamlSchema {
         for oc in config.object_classes {
             object_classes.insert(oc.name, oc.attributes);
         }
-        
+
         YamlSchema {
             object_classes,
             custom_attributes: config.custom_attributes,
@@ -67,7 +67,7 @@ impl From<SchemaConfig> for YamlSchema {
 impl Default for YamlSchema {
     fn default() -> Self {
         let mut object_classes = HashMap::new();
-        
+
         // Add standard LDAP object classes
         object_classes.insert("top".to_string(), vec![]);
         object_classes.insert("domain".to_string(), vec!["dc".to_string()]);
@@ -89,7 +89,7 @@ impl Default for YamlSchema {
             "groupOfNames".to_string(),
             vec!["cn".to_string(), "member".to_string()],
         );
-        
+
         YamlSchema {
             object_classes,
             custom_attributes: HashMap::new(),

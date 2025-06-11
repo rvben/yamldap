@@ -119,7 +119,7 @@ impl LdapResult {
             diagnostic_message: String::new(),
         }
     }
-    
+
     pub fn error(code: LdapResultCode, message: String) -> Self {
         Self {
             result_code: code,

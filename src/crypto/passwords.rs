@@ -4,12 +4,12 @@ use sha2::{Digest, Sha256};
 
 pub fn verify_password(password: &str, stored: &str) -> crate::Result<bool> {
     // Check for password hash prefix
-    if stored.starts_with("{SSHA}") {
-        verify_ssha(password, &stored[6..])
-    } else if stored.starts_with("{SHA}") {
-        verify_sha(password, &stored[5..])
-    } else if stored.starts_with("{SHA256}") {
-        verify_sha256(password, &stored[8..])
+    if let Some(stripped) = stored.strip_prefix("{SSHA}") {
+        verify_ssha(password, stripped)
+    } else if let Some(stripped) = stored.strip_prefix("{SHA}") {
+        verify_sha(password, stripped)
+    } else if let Some(stripped) = stored.strip_prefix("{SHA256}") {
+        verify_sha256(password, stripped)
     } else if stored.starts_with("{BCRYPT}") || stored.starts_with("$2") {
         verify_bcrypt(password, stored.trim_start_matches("{BCRYPT}"))
     } else {
@@ -22,20 +22,20 @@ fn verify_ssha(password: &str, encoded: &str) -> crate::Result<bool> {
     let decoded = BASE64
         .decode(encoded)
         .map_err(|e| crate::YamlLdapError::Auth(format!("Invalid SSHA encoding: {}", e)))?;
-    
+
     if decoded.len() < 20 {
         return Err(crate::YamlLdapError::Auth(
             "Invalid SSHA hash length".to_string(),
         ));
     }
-    
+
     let (hash, salt) = decoded.split_at(20);
-    
+
     let mut hasher = Sha1::new();
     hasher.update(password.as_bytes());
     hasher.update(salt);
     let computed_hash = hasher.finalize();
-    
+
     Ok(computed_hash.as_slice() == hash)
 }
 
@@ -43,11 +43,11 @@ fn verify_sha(password: &str, encoded: &str) -> crate::Result<bool> {
     let decoded = BASE64
         .decode(encoded)
         .map_err(|e| crate::YamlLdapError::Auth(format!("Invalid SHA encoding: {}", e)))?;
-    
+
     let mut hasher = Sha1::new();
     hasher.update(password.as_bytes());
     let computed_hash = hasher.finalize();
-    
+
     Ok(computed_hash.as_slice() == decoded)
 }
 
@@ -55,11 +55,11 @@ fn verify_sha256(password: &str, encoded: &str) -> crate::Result<bool> {
     let decoded = BASE64
         .decode(encoded)
         .map_err(|e| crate::YamlLdapError::Auth(format!("Invalid SHA256 encoding: {}", e)))?;
-    
+
     let mut hasher = Sha256::new();
     hasher.update(password.as_bytes());
     let computed_hash = hasher.finalize();
-    
+
     Ok(computed_hash.as_slice() == decoded)
 }
 
@@ -80,15 +80,15 @@ pub fn hash_password(password: &str, method: &str) -> crate::Result<String> {
         "ssha" => {
             use rand::Rng;
             let salt: [u8; 8] = rand::thread_rng().gen();
-            
+
             let mut hasher = Sha1::new();
             hasher.update(password.as_bytes());
-            hasher.update(&salt);
+            hasher.update(salt);
             let hash = hasher.finalize();
-            
+
             let mut result = hash.to_vec();
             result.extend_from_slice(&salt);
-            
+
             Ok(format!("{{SSHA}}{}", BASE64.encode(result)))
         }
         "bcrypt" => {
@@ -112,14 +112,14 @@ mod tests {
         assert!(verify_password("test123", "test123").unwrap());
         assert!(!verify_password("test123", "wrong").unwrap());
     }
-    
+
     #[test]
     fn test_sha_password() {
         let hashed = hash_password("test123", "sha").unwrap();
         assert!(verify_password("test123", &hashed).unwrap());
         assert!(!verify_password("wrong", &hashed).unwrap());
     }
-    
+
     #[test]
     fn test_bcrypt_password() {
         let hashed = hash_password("test123", "bcrypt").unwrap();

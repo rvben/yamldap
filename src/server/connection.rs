@@ -15,19 +15,19 @@ pub async fn handle_connection(
 ) -> crate::Result<()> {
     let peer_addr = socket.peer_addr()?;
     info!("Handling connection from {}", peer_addr);
-    
+
     // Create framed connection with our simple LDAP codec
     let mut framed = Framed::new(socket, SimpleLdapCodec);
-    
+
     // Session state
     let mut session = LdapSession::new();
-    
+
     // Message handling loop
     while let Some(result) = framed.next().await {
         match result {
             Ok(message) => {
                 debug!("Received LDAP message: {:?}", message);
-                
+
                 // Convert protocol message to operation
                 let operation = match protocol_to_operation(&message) {
                     Some(op) => op,
@@ -36,7 +36,7 @@ pub async fn handle_connection(
                         continue;
                     }
                 };
-                
+
                 // Handle the operation
                 let responses = handle_operation(
                     message.message_id,
@@ -45,13 +45,14 @@ pub async fn handle_connection(
                     &auth_handler,
                     session.is_bound(),
                 );
-                
+
                 // Update session state for bind operations
                 if let LdapProtocolOp::BindRequest { ref dn, .. } = message.protocol_op {
                     // Check if bind was successful
                     if let Some(response) = responses.first() {
                         if let LdapProtocolOp::BindResponse { ref result } = response.protocol_op {
-                            if result.result_code == crate::ldap::protocol::LdapResultCode::Success {
+                            if result.result_code == crate::ldap::protocol::LdapResultCode::Success
+                            {
                                 session.bind(dn.clone());
                                 info!("Successful bind for DN: {}", dn);
                             }
@@ -62,7 +63,7 @@ pub async fn handle_connection(
                     info!("Client unbind, closing connection");
                     break;
                 }
-                
+
                 // Send responses
                 for response in responses {
                     debug!("Sending LDAP response: {:?}", response);
@@ -78,7 +79,7 @@ pub async fn handle_connection(
             }
         }
     }
-    
+
     info!("Connection closed for {}", peer_addr);
     Ok(())
 }
@@ -86,13 +87,15 @@ pub async fn handle_connection(
 // Convert protocol messages to operations
 fn protocol_to_operation(msg: &LdapMessage) -> Option<LdapOperation> {
     match &msg.protocol_op {
-        LdapProtocolOp::BindRequest { version, dn, authentication } => {
-            Some(LdapOperation::Bind {
-                version: *version,
-                dn: dn.clone(),
-                auth: authentication.clone(),
-            })
-        }
+        LdapProtocolOp::BindRequest {
+            version,
+            dn,
+            authentication,
+        } => Some(LdapOperation::Bind {
+            version: *version,
+            dn: dn.clone(),
+            auth: authentication.clone(),
+        }),
         LdapProtocolOp::UnbindRequest => Some(LdapOperation::Unbind),
         LdapProtocolOp::SearchRequest {
             base_dn,

@@ -27,12 +27,14 @@ impl AttributeValue {
             AttributeValue::String(s) => s.clone(),
             AttributeValue::Integer(i) => i.to_string(),
             AttributeValue::Boolean(b) => b.to_string(),
-            AttributeValue::Binary(b) => base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b),
+            AttributeValue::Binary(b) => {
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b)
+            }
             AttributeValue::Dn(dn) => dn.clone(),
             AttributeValue::GeneralizedTime(dt) => dt.format("%Y%m%d%H%M%SZ").to_string(),
         }
     }
-    
+
     pub fn as_bytes(&self) -> Vec<u8> {
         match self {
             AttributeValue::String(s) => s.as_bytes().to_vec(),
@@ -69,22 +71,31 @@ impl LdapEntry {
             object_classes: Vec::new(),
         }
     }
-    
-    pub fn add_attribute(&mut self, name: String, values: Vec<AttributeValue>, syntax: AttributeSyntax) {
+
+    pub fn add_attribute(
+        &mut self,
+        name: String,
+        values: Vec<AttributeValue>,
+        syntax: AttributeSyntax,
+    ) {
         self.attributes.insert(
             name.to_lowercase(),
-            LdapAttribute { name, values, syntax },
+            LdapAttribute {
+                name,
+                values,
+                syntax,
+            },
         );
     }
-    
+
     pub fn get_attribute(&self, name: &str) -> Option<&LdapAttribute> {
         self.attributes.get(&name.to_lowercase())
     }
-    
+
     pub fn has_attribute(&self, name: &str) -> bool {
         self.attributes.contains_key(&name.to_lowercase())
     }
-    
+
     pub fn matches_dn(&self, dn: &str) -> bool {
         self.dn.eq_ignore_ascii_case(dn)
     }
@@ -94,7 +105,7 @@ impl From<crate::yaml::YamlEntry> for LdapEntry {
     fn from(yaml_entry: crate::yaml::YamlEntry) -> Self {
         let mut entry = LdapEntry::new(yaml_entry.dn);
         entry.object_classes = yaml_entry.object_class;
-        
+
         // Add objectClass as an attribute
         let oc_values: Vec<AttributeValue> = entry
             .object_classes
@@ -106,7 +117,7 @@ impl From<crate::yaml::YamlEntry> for LdapEntry {
             oc_values,
             AttributeSyntax::String,
         );
-        
+
         // Convert other attributes
         for (name, value) in yaml_entry.attributes {
             let values = match value {
@@ -128,14 +139,14 @@ impl From<crate::yaml::YamlEntry> for LdapEntry {
                     .collect(),
                 _ => vec![],
             };
-            
+
             if !values.is_empty() {
                 // Guess syntax based on attribute name or value type
                 let syntax = guess_attribute_syntax(&name, &values[0]);
                 entry.add_attribute(name, values, syntax);
             }
         }
-        
+
         entry
     }
 }

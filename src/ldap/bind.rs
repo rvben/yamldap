@@ -1,4 +1,6 @@
-use super::protocol::{BindAuthentication, LdapMessage, LdapMessageId, LdapProtocolOp, LdapResult, LdapResultCode};
+use super::protocol::{
+    BindAuthentication, LdapMessage, LdapMessageId, LdapProtocolOp, LdapResult, LdapResultCode,
+};
 use crate::directory::{AuthHandler, Directory};
 
 pub fn handle_bind_request(
@@ -26,21 +28,18 @@ pub fn handle_bind_request(
             } else {
                 directory.get_entry(&dn)
             };
-            
+
             match auth_handler.authenticate(entry.as_ref(), &password) {
                 Ok(true) => LdapResult::success(),
                 Ok(false) => LdapResult::error(
                     LdapResultCode::InvalidDNSyntax,
                     "Invalid credentials".to_string(),
                 ),
-                Err(e) => LdapResult::error(
-                    LdapResultCode::InvalidDNSyntax,
-                    e.to_string(),
-                ),
+                Err(e) => LdapResult::error(LdapResultCode::InvalidDNSyntax, e.to_string()),
             }
         }
     };
-    
+
     LdapMessage {
         message_id,
         protocol_op: LdapProtocolOp::BindResponse { result },

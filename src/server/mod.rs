@@ -19,21 +19,18 @@ impl Server {
         // Load directory from YAML
         let (yaml_dir, schema) = yaml::parse_directory_file(&config.yaml_file).await?;
         let directory = Directory::from_yaml(yaml_dir, schema);
-        
-        info!(
-            "Loaded directory with base DN: {}",
-            directory.base_dn
-        );
-        
+
+        info!("Loaded directory with base DN: {}", directory.base_dn);
+
         let auth_handler = AuthHandler::new(config.allow_anonymous);
-        
+
         Ok(Self {
             config,
             directory: Arc::new(RwLock::new(directory)),
             auth_handler: Arc::new(auth_handler),
         })
     }
-    
+
     pub async fn run(self) -> crate::Result<()> {
         // Set up hot-reload if enabled
         let reload_rx = if self.config.hot_reload {
@@ -43,12 +40,12 @@ impl Server {
         } else {
             None
         };
-        
+
         // Start hot-reload handler if enabled
         if let Some(mut rx) = reload_rx {
             let yaml_path = self.config.yaml_file.clone();
             let directory = Arc::clone(&self.directory);
-            
+
             tokio::spawn(async move {
                 while rx.changed().await.is_ok() {
                     info!("Reloading YAML directory file...");
@@ -61,7 +58,10 @@ impl Server {
                                     info!("Successfully reloaded directory");
                                 }
                                 Err(e) => {
-                                    error!("Failed to acquire write lock for directory reload: {}", e);
+                                    error!(
+                                        "Failed to acquire write lock for directory reload: {}",
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -72,22 +72,19 @@ impl Server {
                 }
             });
         }
-        
+
         let listener = TcpListener::bind(&self.config.bind_address).await?;
-        
-        info!(
-            "LDAP server listening on {}",
-            self.config.bind_address
-        );
-        
+
+        info!("LDAP server listening on {}", self.config.bind_address);
+
         loop {
             match listener.accept().await {
                 Ok((socket, addr)) => {
                     info!("New connection from {}", addr);
-                    
+
                     let directory = Arc::clone(&self.directory);
                     let auth_handler = Arc::clone(&self.auth_handler);
-                    
+
                     tokio::spawn(async move {
                         // Create a read-only snapshot of the directory for this connection
                         let dir_snapshot = match directory.read() {
@@ -97,13 +94,9 @@ impl Server {
                                 return;
                             }
                         };
-                        
-                        if let Err(e) = connection::handle_connection(
-                            socket,
-                            dir_snapshot,
-                            auth_handler,
-                        )
-                        .await
+
+                        if let Err(e) =
+                            connection::handle_connection(socket, dir_snapshot, auth_handler).await
                         {
                             error!("Connection error: {}", e);
                         }

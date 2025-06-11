@@ -7,7 +7,7 @@ use yamldap::{Config, Server};
 async fn main() -> anyhow::Result<()> {
     // Parse command line arguments
     let args = yamldap::config::CliArgs::parse();
-    
+
     // Configure logging
     let log_level = if args.verbose {
         Level::DEBUG
@@ -20,17 +20,15 @@ async fn main() -> anyhow::Result<()> {
             _ => Level::INFO,
         }
     };
-    
-    FmtSubscriber::builder()
-        .with_max_level(log_level)
-        .init();
-    
+
+    FmtSubscriber::builder().with_max_level(log_level).init();
+
     // Create configuration
     let config = Config::from_cli_args(args)?;
-    
+
     // Create and run server
     let server = Server::new(config).await?;
     server.run().await?;
-    
+
     Ok(())
 }

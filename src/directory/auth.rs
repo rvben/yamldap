@@ -11,7 +11,7 @@ impl AuthHandler {
     pub fn new(allow_anonymous: bool) -> Self {
         Self { allow_anonymous }
     }
-    
+
     pub fn authenticate(&self, entry: Option<&LdapEntry>, password: &str) -> crate::Result<bool> {
         // Anonymous bind
         if password.is_empty() {
@@ -23,19 +23,16 @@ impl AuthHandler {
                 ));
             }
         }
-        
+
         // Must have entry for non-anonymous bind
-        let entry = entry.ok_or_else(|| {
-            YamlLdapError::Auth("Invalid credentials".to_string())
-        })?;
-        
+        let entry = entry.ok_or_else(|| YamlLdapError::Auth("Invalid credentials".to_string()))?;
+
         // Get userPassword attribute
-        let password_attr = entry.get_attribute("userpassword")
+        let password_attr = entry
+            .get_attribute("userpassword")
             .or_else(|| entry.get_attribute("userPassword"))
-            .ok_or_else(|| {
-                YamlLdapError::Auth("No password attribute found".to_string())
-            })?;
-        
+            .ok_or_else(|| YamlLdapError::Auth("No password attribute found".to_string()))?;
+
         // Check password against all values
         for value in &password_attr.values {
             if let AttributeValue::String(stored_password) = value {
@@ -44,10 +41,10 @@ impl AuthHandler {
                 }
             }
         }
-        
+
         Err(YamlLdapError::Auth("Invalid credentials".to_string()))
     }
-    
+
     pub fn is_anonymous_allowed(&self) -> bool {
         self.allow_anonymous
     }
