@@ -153,8 +153,10 @@ pub fn parse_ldap_filter(filter_str: &str) -> crate::Result<LdapFilter> {
         }
     }
 
-    // For complex filters, return a simple catch-all for now
-    Ok(LdapFilter::Present("objectClass".to_string()))
+    // If we get here, the filter is not properly formatted
+    Err(crate::YamlLdapError::Protocol(
+        "Invalid filter format".to_string(),
+    ))
 }
 
 #[cfg(test)]

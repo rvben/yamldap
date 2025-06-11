@@ -18,7 +18,11 @@ Thumbs.db
 *.log
 test-results/
 
+# Coverage reports
+coverage/
+tarpaulin-report.html
+cobertura.xml
+
 # Environment
 .env
 .env.local
-EOF < /dev/null

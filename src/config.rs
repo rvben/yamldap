@@ -52,7 +52,14 @@ pub struct Config {
 
 impl Config {
     pub fn from_cli_args(args: CliArgs) -> crate::Result<Self> {
-        let bind_address = format!("{}:{}", args.bind_address, args.port)
+        // Handle IPv6 addresses by adding brackets if needed
+        let bind_address = if args.bind_address.contains(':') && !args.bind_address.starts_with('[') {
+            format!("[{}]:{}", args.bind_address, args.port)
+        } else {
+            format!("{}:{}", args.bind_address, args.port)
+        };
+        
+        let bind_address = bind_address
             .parse()
             .map_err(|e| crate::YamlLdapError::Config(format!("Invalid bind address: {}", e)))?;
 
@@ -72,5 +79,174 @@ impl Config {
             hot_reload: args.hot_reload,
             log_level,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_cli_args_default_values() {
+        let args = CliArgs::parse_from(["yamldap", "-f", "test.yaml"]);
+        assert_eq!(args.file, PathBuf::from("test.yaml"));
+        assert_eq!(args.port, 389);
+        assert_eq!(args.bind_address, "0.0.0.0");
+        assert_eq!(args.base_dn, None);
+        assert!(!args.allow_anonymous);
+        assert!(!args.hot_reload);
+        assert!(!args.verbose);
+        assert_eq!(args.log_level, "info");
+    }
+
+    #[test]
+    fn test_cli_args_custom_values() {
+        let args = CliArgs::parse_from([
+            "yamldap",
+            "-f", "test.yaml",
+            "-p", "1389",
+            "--bind-address", "127.0.0.1",
+            "--base-dn", "dc=example,dc=com",
+            "--allow-anonymous",
+            "--hot-reload",
+            "-v",
+            "--log-level", "debug",
+        ]);
+        assert_eq!(args.file, PathBuf::from("test.yaml"));
+        assert_eq!(args.port, 1389);
+        assert_eq!(args.bind_address, "127.0.0.1");
+        assert_eq!(args.base_dn, Some("dc=example,dc=com".to_string()));
+        assert!(args.allow_anonymous);
+        assert!(args.hot_reload);
+        assert!(args.verbose);
+        assert_eq!(args.log_level, "debug");
+    }
+
+    #[test]
+    fn test_config_from_cli_args_success() {
+        let args = CliArgs {
+            file: PathBuf::from("test.yaml"),
+            port: 389,
+            bind_address: "127.0.0.1".to_string(),
+            base_dn: Some("dc=example,dc=com".to_string()),
+            allow_anonymous: true,
+            hot_reload: true,
+            verbose: false,
+            log_level: "debug".to_string(),
+        };
+
+        let config = Config::from_cli_args(args).unwrap();
+        assert_eq!(config.yaml_file, PathBuf::from("test.yaml"));
+        assert_eq!(config.bind_address, SocketAddr::from_str("127.0.0.1:389").unwrap());
+        assert_eq!(config.base_dn, Some("dc=example,dc=com".to_string()));
+        assert!(config.allow_anonymous);
+        assert!(config.hot_reload);
+        assert_eq!(config.log_level, tracing::Level::DEBUG);
+    }
+
+    #[test]
+    fn test_config_from_cli_args_invalid_bind_address() {
+        let args = CliArgs {
+            file: PathBuf::from("test.yaml"),
+            port: 389,
+            bind_address: "invalid_address".to_string(),
+            base_dn: None,
+            allow_anonymous: false,
+            hot_reload: false,
+            verbose: false,
+            log_level: "info".to_string(),
+        };
+
+        let result = Config::from_cli_args(args);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, crate::YamlLdapError::Config(_)));
+    }
+
+    #[test]
+    fn test_config_log_level_parsing() {
+        let test_cases = vec![
+            ("debug", tracing::Level::DEBUG),
+            ("info", tracing::Level::INFO),
+            ("warn", tracing::Level::WARN),
+            ("error", tracing::Level::ERROR),
+            ("DEBUG", tracing::Level::DEBUG),
+            ("INFO", tracing::Level::INFO),
+            ("WARN", tracing::Level::WARN),
+            ("ERROR", tracing::Level::ERROR),
+            ("invalid", tracing::Level::INFO), // default
+            ("", tracing::Level::INFO), // default
+        ];
+
+        for (log_level_str, expected_level) in test_cases {
+            let args = CliArgs {
+                file: PathBuf::from("test.yaml"),
+                port: 389,
+                bind_address: "0.0.0.0".to_string(),
+                base_dn: None,
+                allow_anonymous: false,
+                hot_reload: false,
+                verbose: false,
+                log_level: log_level_str.to_string(),
+            };
+
+            let config = Config::from_cli_args(args).unwrap();
+            assert_eq!(config.log_level, expected_level);
+        }
+    }
+
+    #[test]
+    fn test_config_with_ipv6_address() {
+        let args = CliArgs {
+            file: PathBuf::from("test.yaml"),
+            port: 389,
+            bind_address: "::1".to_string(),
+            base_dn: None,
+            allow_anonymous: false,
+            hot_reload: false,
+            verbose: false,
+            log_level: "info".to_string(),
+        };
+
+        let config = Config::from_cli_args(args).unwrap();
+        assert_eq!(config.bind_address, SocketAddr::from_str("[::1]:389").unwrap());
+    }
+
+    #[test]
+    fn test_config_with_custom_port() {
+        let args = CliArgs {
+            file: PathBuf::from("test.yaml"),
+            port: 1389,
+            bind_address: "0.0.0.0".to_string(),
+            base_dn: None,
+            allow_anonymous: false,
+            hot_reload: false,
+            verbose: false,
+            log_level: "info".to_string(),
+        };
+
+        let config = Config::from_cli_args(args).unwrap();
+        assert_eq!(config.bind_address.port(), 1389);
+    }
+
+    #[test]
+    fn test_config_clone() {
+        let config = Config {
+            yaml_file: PathBuf::from("test.yaml"),
+            bind_address: SocketAddr::from_str("127.0.0.1:389").unwrap(),
+            base_dn: Some("dc=example,dc=com".to_string()),
+            allow_anonymous: true,
+            hot_reload: true,
+            log_level: tracing::Level::DEBUG,
+        };
+
+        let cloned = config.clone();
+        assert_eq!(cloned.yaml_file, config.yaml_file);
+        assert_eq!(cloned.bind_address, config.bind_address);
+        assert_eq!(cloned.base_dn, config.base_dn);
+        assert_eq!(cloned.allow_anonymous, config.allow_anonymous);
+        assert_eq!(cloned.hot_reload, config.hot_reload);
+        assert_eq!(cloned.log_level, config.log_level);
     }
 }

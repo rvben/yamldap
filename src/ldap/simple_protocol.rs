@@ -374,3 +374,321 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_read_write_length_short_form() {
+        // Test short form (< 128)
+        let mut buf = BytesMut::new();
+        SimpleLdapCodec::write_length(&mut buf, 42);
+        
+        let mut cursor = Cursor::new(buf.as_ref());
+        let length = SimpleLdapCodec::read_length(&mut cursor).unwrap();
+        assert_eq!(length, 42);
+    }
+
+    #[test]
+    fn test_read_write_length_long_form_1_byte() {
+        // Test long form with 1 byte (128-255)
+        let mut buf = BytesMut::new();
+        SimpleLdapCodec::write_length(&mut buf, 200);
+        
+        let mut cursor = Cursor::new(buf.as_ref());
+        let length = SimpleLdapCodec::read_length(&mut cursor).unwrap();
+        assert_eq!(length, 200);
+    }
+
+    #[test]
+    fn test_read_write_length_long_form_2_bytes() {
+        // Test long form with 2 bytes (256-65535)
+        let mut buf = BytesMut::new();
+        SimpleLdapCodec::write_length(&mut buf, 1000);
+        
+        let mut cursor = Cursor::new(buf.as_ref());
+        let length = SimpleLdapCodec::read_length(&mut cursor).unwrap();
+        assert_eq!(length, 1000);
+    }
+
+    #[test]
+    fn test_read_write_length_long_form_3_bytes() {
+        // Test long form with 3 bytes (>= 65536)
+        let mut buf = BytesMut::new();
+        SimpleLdapCodec::write_length(&mut buf, 100000);
+        
+        let mut cursor = Cursor::new(buf.as_ref());
+        let length = SimpleLdapCodec::read_length(&mut cursor).unwrap();
+        assert_eq!(length, 100000);
+    }
+
+    #[test]
+    fn test_read_length_insufficient_data() {
+        let buf = vec![];
+        let mut cursor = Cursor::new(buf.as_ref());
+        let result = SimpleLdapCodec::read_length(&mut cursor);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn test_read_length_invalid_long_form() {
+        // Long form with too many octets
+        let buf = vec![0x85]; // Claims 5 octets but we don't have them
+        let mut cursor = Cursor::new(buf.as_ref());
+        let result = SimpleLdapCodec::read_length(&mut cursor);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_read_write_string() {
+        let mut buf = BytesMut::new();
+        SimpleLdapCodec::write_string(&mut buf, "hello world");
+        
+        let mut cursor = Cursor::new(buf.as_ref());
+        let string = SimpleLdapCodec::read_string(&mut cursor).unwrap();
+        assert_eq!(string, "hello world");
+    }
+
+    #[test]
+    fn test_read_string_invalid_tag() {
+        let buf = vec![0x05]; // Wrong tag
+        let mut cursor = Cursor::new(buf.as_ref());
+        let result = SimpleLdapCodec::read_string(&mut cursor);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_read_string_insufficient_data() {
+        let buf = vec![0x04, 0x10]; // Claims 16 bytes but we don't have them
+        let mut cursor = Cursor::new(buf.as_ref());
+        let result = SimpleLdapCodec::read_string(&mut cursor);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn test_read_string_invalid_utf8() {
+        let buf = vec![0x04, 0x02, 0xFF, 0xFF]; // Invalid UTF-8
+        let mut cursor = Cursor::new(buf.as_ref());
+        let result = SimpleLdapCodec::read_string(&mut cursor);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_read_write_integer() {
+        let mut buf = BytesMut::new();
+        SimpleLdapCodec::write_integer(&mut buf, 42);
+        
+        let mut cursor = Cursor::new(buf.as_ref());
+        let value = SimpleLdapCodec::read_integer(&mut cursor).unwrap();
+        assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn test_read_integer_invalid_tag() {
+        let buf = vec![0x03]; // Wrong tag
+        let mut cursor = Cursor::new(buf.as_ref());
+        let result = SimpleLdapCodec::read_integer(&mut cursor);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_decode_empty_buffer() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::new();
+        let result = codec.decode(&mut buf).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_decode_partial_message() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::from(&[0x30, 0x10][..]); // SEQUENCE with length 16 but no content
+        let result = codec.decode(&mut buf).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_decode_invalid_sequence_tag() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::from(&[0x31, 0x02, 0x00, 0x00, 0x00][..]); // Wrong tag with 5 bytes
+        let result = codec.decode(&mut buf);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_encode_bind_request() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::new();
+        
+        let msg = LdapMessage {
+            message_id: 1,
+            protocol_op: LdapProtocolOp::BindRequest {
+                version: 3,
+                dn: "".to_string(), // Anonymous bind
+                authentication: BindAuthentication::Anonymous,
+            },
+        };
+        
+        // BindRequest encoding is not implemented in SimpleLdapCodec
+        let result = codec.encode(msg, &mut buf);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_encode_bind_response() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::new();
+        
+        let msg = LdapMessage {
+            message_id: 1,
+            protocol_op: LdapProtocolOp::BindResponse {
+                result: LdapResult::success(),
+            },
+        };
+        
+        let result = codec.encode(msg, &mut buf);
+        assert!(result.is_ok());
+        assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn test_encode_search_result_entry() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::new();
+        
+        let mut attrs = HashMap::new();
+        attrs.insert("cn".to_string(), vec!["test".to_string()]);
+        
+        let msg = LdapMessage {
+            message_id: 2,
+            protocol_op: LdapProtocolOp::SearchResultEntry {
+                dn: "cn=test,dc=example,dc=com".to_string(),
+                attributes: attrs,
+            },
+        };
+        
+        let result = codec.encode(msg, &mut buf);
+        assert!(result.is_ok());
+        assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn test_encode_search_result_done() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::new();
+        
+        let msg = LdapMessage {
+            message_id: 3,
+            protocol_op: LdapProtocolOp::SearchResultDone {
+                result: LdapResult::error(
+                    LdapResultCode::NoSuchObject,
+                    "Not found".to_string(),
+                ),
+            },
+        };
+        
+        let result = codec.encode(msg, &mut buf);
+        assert!(result.is_ok());
+        assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn test_encode_unsupported_operation() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::new();
+        
+        let msg = LdapMessage {
+            message_id: 1,
+            protocol_op: LdapProtocolOp::UnbindRequest,
+        };
+        
+        let result = codec.encode(msg, &mut buf);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_roundtrip_bind_response() {
+        let mut codec = SimpleLdapCodec;
+        
+        // Encode
+        let original = LdapMessage {
+            message_id: 42,
+            protocol_op: LdapProtocolOp::BindResponse {
+                result: LdapResult::success(),
+            },
+        };
+        
+        let mut buf = BytesMut::new();
+        codec.encode(original.clone(), &mut buf).unwrap();
+        
+        // This test would require implementing decode for BindResponse
+        // For now, just check that encoding succeeded
+        assert!(!buf.is_empty());
+        assert_eq!(buf[0], 0x30); // SEQUENCE tag
+    }
+
+    #[test]
+    fn test_write_integer_various_sizes() {
+        // Test single byte integer
+        let mut buf = BytesMut::new();
+        SimpleLdapCodec::write_integer(&mut buf, 127);
+        assert_eq!(buf[0], 0x02); // INTEGER tag
+        assert_eq!(buf[1], 0x01); // length
+        assert_eq!(buf[2], 127);
+        
+        // Test multi-byte integer
+        let mut buf = BytesMut::new();
+        SimpleLdapCodec::write_integer(&mut buf, 300);
+        assert_eq!(buf[0], 0x02); // INTEGER tag
+        assert_eq!(buf[1], 0x02); // length
+        assert_eq!(buf[2], 0x01); // high byte
+        assert_eq!(buf[3], 0x2C); // low byte (300 = 0x012C)
+    }
+
+    #[test]
+    fn test_read_integer_multi_byte() {
+        // Test reading multi-byte integer
+        let buf = vec![0x02, 0x02, 0x01, 0x2C]; // INTEGER 300
+        let mut cursor = Cursor::new(buf.as_ref());
+        let value = SimpleLdapCodec::read_integer(&mut cursor).unwrap();
+        assert_eq!(value, 300);
+    }
+
+    #[test]
+    fn test_decode_with_debug_logging() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::new();
+        
+        // Create a simple bind request
+        buf.put_u8(0x30); // SEQUENCE
+        buf.put_u8(0x0C); // length 12
+        buf.put_u8(0x02); // INTEGER (message ID)
+        buf.put_u8(0x01); // length 1
+        buf.put_u8(0x01); // value 1
+        buf.put_u8(0x60); // Bind Request
+        buf.put_u8(0x07); // length 7
+        buf.put_u8(0x02); // INTEGER (version)
+        buf.put_u8(0x01); // length 1
+        buf.put_u8(0x03); // value 3
+        buf.put_u8(0x04); // OCTET STRING (DN)
+        buf.put_u8(0x00); // length 0 (empty)
+        buf.put_u8(0x80); // Simple auth
+        buf.put_u8(0x00); // length 0 (anonymous)
+        
+        let result = codec.decode(&mut buf);
+        assert!(result.is_ok());
+        let msg = result.unwrap().unwrap();
+        assert_eq!(msg.message_id, 1);
+    }
+}

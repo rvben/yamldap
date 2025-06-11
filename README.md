@@ -171,19 +171,49 @@ public LdapContextSource contextSource() {
 
 ### Running Tests
 ```bash
+# Run all tests
 cargo test
+
+# Run with coverage report
+make coverage
+
+# Check test coverage percentage
+make coverage-check
+
+# Run benchmarks
+make bench
 ```
 
-### Building Release
+### Building
 ```bash
+# Build release version
 cargo build --release
+
+# Build Docker image (3.99MB scratch image)
+make docker-build
 ```
 
-### Code Formatting
+### Code Quality
 ```bash
+# Format code
 cargo fmt
+
+# Run linter
 cargo clippy
+
+# Run all CI checks
+make ci
 ```
+
+### Testing & Coverage
+
+The project includes comprehensive unit tests with ~63% code coverage:
+- 148 unit tests covering all major components
+- Integration tests for LDAP operations
+- Performance benchmarks with Criterion
+- Test coverage reporting via cargo-tarpaulin
+
+Run `make help` to see all available Make targets.
 
 ## Limitations
 

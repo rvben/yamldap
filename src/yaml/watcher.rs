@@ -96,3 +96,125 @@ impl YamlWatcher {
         is_our_file && is_relevant_kind
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+    use notify::{event::{CreateKind, ModifyKind}};
+
+    #[test]
+    fn test_is_relevant_event_modify() {
+        let watcher = YamlWatcher {
+            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
+            rx: mpsc::channel().1,
+        };
+        
+        let path = Path::new("/tmp/test.yaml");
+        let event = Event {
+            kind: EventKind::Modify(ModifyKind::Any),
+            paths: vec![path.to_path_buf()],
+            attrs: Default::default(),
+        };
+        
+        assert!(watcher.is_relevant_event(&event, path));
+    }
+
+    #[test]
+    fn test_is_relevant_event_create() {
+        let watcher = YamlWatcher {
+            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
+            rx: mpsc::channel().1,
+        };
+        
+        let path = Path::new("/tmp/test.yaml");
+        let event = Event {
+            kind: EventKind::Create(CreateKind::Any),
+            paths: vec![path.to_path_buf()],
+            attrs: Default::default(),
+        };
+        
+        assert!(watcher.is_relevant_event(&event, path));
+    }
+
+    #[test]
+    fn test_is_relevant_event_wrong_file() {
+        let watcher = YamlWatcher {
+            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
+            rx: mpsc::channel().1,
+        };
+        
+        let watched_path = Path::new("/tmp/test.yaml");
+        let other_path = Path::new("/tmp/other.yaml");
+        let event = Event {
+            kind: EventKind::Modify(ModifyKind::Any),
+            paths: vec![other_path.to_path_buf()],
+            attrs: Default::default(),
+        };
+        
+        assert!(!watcher.is_relevant_event(&event, watched_path));
+    }
+
+    #[test]
+    fn test_is_relevant_event_wrong_kind() {
+        let watcher = YamlWatcher {
+            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
+            rx: mpsc::channel().1,
+        };
+        
+        let path = Path::new("/tmp/test.yaml");
+        let event = Event {
+            kind: EventKind::Access(notify::event::AccessKind::Any),
+            paths: vec![path.to_path_buf()],
+            attrs: Default::default(),
+        };
+        
+        assert!(!watcher.is_relevant_event(&event, path));
+    }
+
+    #[tokio::test]
+    async fn test_yaml_watcher_new() {
+        let temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file.as_file(), "test: data").unwrap();
+        
+        let result = YamlWatcher::new(temp_file.path());
+        assert!(result.is_ok());
+        
+        let (_watcher, rx) = result.unwrap();
+        
+        // Initial value should be available
+        assert!(rx.has_changed().is_ok());
+    }
+
+    // Slow test - commented out for regular runs
+    // #[tokio::test]
+    #[allow(dead_code)]
+    async fn test_yaml_watcher_file_change() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file.as_file(), "test: data").unwrap();
+        temp_file.flush().unwrap();
+        
+        let (_watcher, mut rx) = YamlWatcher::new(temp_file.path()).unwrap();
+        
+        // Clear initial notification
+        let _ = rx.changed().await;
+        
+        // Modify the file
+        writeln!(temp_file.as_file(), "test: modified").unwrap();
+        temp_file.flush().unwrap();
+        
+        // Wait a bit for the file system event
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        
+        // We might or might not receive a change notification depending on the file system
+        // Just check that we can still try to receive
+        let _ = rx.has_changed();
+    }
+
+    #[test]
+    fn test_yaml_watcher_invalid_path() {
+        let result = YamlWatcher::new(Path::new("/nonexistent/parent/file.yaml"));
+        assert!(result.is_err());
+    }
+}

@@ -26,3 +26,79 @@ impl LdapSession {
         self.is_authenticated
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_new() {
+        let session = LdapSession::new();
+        assert!(!session.is_authenticated);
+        assert!(session.bound_dn.is_none());
+        assert!(!session.anonymous);
+        assert!(!session.is_bound());
+    }
+
+    #[test]
+    fn test_session_bind_with_dn() {
+        let mut session = LdapSession::new();
+        session.bind("cn=admin,dc=example,dc=com".to_string());
+        
+        assert!(session.is_authenticated);
+        assert_eq!(session.bound_dn, Some("cn=admin,dc=example,dc=com".to_string()));
+        assert!(!session.anonymous);
+        assert!(session.is_bound());
+    }
+
+    #[test]
+    fn test_session_bind_anonymous() {
+        let mut session = LdapSession::new();
+        session.bind("".to_string());
+        
+        assert!(session.is_authenticated);
+        assert!(session.bound_dn.is_none());
+        assert!(session.anonymous);
+        assert!(session.is_bound());
+    }
+
+    #[test]
+    fn test_session_unbind() {
+        let mut session = LdapSession::new();
+        session.bind("cn=admin,dc=example,dc=com".to_string());
+        
+        // Verify bound state
+        assert!(session.is_bound());
+        
+        // Unbind
+        session.unbind();
+        
+        assert!(!session.is_authenticated);
+        assert!(session.bound_dn.is_none());
+        assert!(!session.anonymous);
+        assert!(!session.is_bound());
+    }
+
+    #[test]
+    fn test_session_rebind() {
+        let mut session = LdapSession::new();
+        
+        // First bind
+        session.bind("cn=user1,dc=example,dc=com".to_string());
+        assert_eq!(session.bound_dn, Some("cn=user1,dc=example,dc=com".to_string()));
+        
+        // Rebind as different user
+        session.bind("cn=user2,dc=example,dc=com".to_string());
+        assert_eq!(session.bound_dn, Some("cn=user2,dc=example,dc=com".to_string()));
+        assert!(session.is_authenticated);
+        assert!(!session.anonymous);
+    }
+
+    #[test]
+    fn test_session_default() {
+        let session: LdapSession = Default::default();
+        assert!(!session.is_authenticated);
+        assert!(session.bound_dn.is_none());
+        assert!(!session.anonymous);
+    }
+}

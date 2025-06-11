@@ -172,3 +172,418 @@ pub fn handle_operation(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::directory::entry::{AttributeSyntax, AttributeValue, LdapEntry};
+
+    fn create_test_directory() -> Directory {
+        let schema = crate::yaml::YamlSchema::default();
+        let directory = Directory::new("dc=example,dc=com".to_string(), schema);
+        
+        // Add test users
+        let mut user1 = LdapEntry::new("cn=user1,ou=users,dc=example,dc=com".to_string());
+        user1.add_attribute(
+            "cn".to_string(),
+            vec![AttributeValue::String("user1".to_string())],
+            AttributeSyntax::String,
+        );
+        user1.add_attribute(
+            "uid".to_string(),
+            vec![AttributeValue::String("user1".to_string())],
+            AttributeSyntax::String,
+        );
+        user1.add_attribute(
+            "userPassword".to_string(),
+            vec![AttributeValue::String("password1".to_string())],
+            AttributeSyntax::String,
+        );
+        user1.add_attribute(
+            "mail".to_string(),
+            vec![AttributeValue::String("user1@example.com".to_string())],
+            AttributeSyntax::String,
+        );
+        user1.object_classes = vec!["person".to_string(), "top".to_string()];
+        user1.add_attribute(
+            "objectClass".to_string(),
+            vec![
+                AttributeValue::String("person".to_string()),
+                AttributeValue::String("top".to_string()),
+            ],
+            AttributeSyntax::String,
+        );
+        directory.add_entry(user1);
+
+        let mut user2 = LdapEntry::new("cn=user2,ou=users,dc=example,dc=com".to_string());
+        user2.add_attribute(
+            "cn".to_string(),
+            vec![AttributeValue::String("user2".to_string())],
+            AttributeSyntax::String,
+        );
+        user2.add_attribute(
+            "uid".to_string(),
+            vec![AttributeValue::String("user2".to_string())],
+            AttributeSyntax::String,
+        );
+        user2.object_classes = vec!["person".to_string()];
+        user2.add_attribute(
+            "objectClass".to_string(),
+            vec![AttributeValue::String("person".to_string())],
+            AttributeSyntax::String,
+        );
+        directory.add_entry(user2);
+
+        // Add OU entry
+        let mut ou = LdapEntry::new("ou=users,dc=example,dc=com".to_string());
+        ou.add_attribute(
+            "ou".to_string(),
+            vec![AttributeValue::String("users".to_string())],
+            AttributeSyntax::String,
+        );
+        ou.object_classes = vec!["organizationalUnit".to_string()];
+        ou.add_attribute(
+            "objectClass".to_string(),
+            vec![AttributeValue::String("organizationalUnit".to_string())],
+            AttributeSyntax::String,
+        );
+        directory.add_entry(ou);
+
+        // Add base DN entry
+        let mut base = LdapEntry::new("dc=example,dc=com".to_string());
+        base.object_classes = vec!["top".to_string(), "domain".to_string()];
+        base.add_attribute(
+            "objectClass".to_string(),
+            vec![
+                AttributeValue::String("top".to_string()),
+                AttributeValue::String("domain".to_string()),
+            ],
+            AttributeSyntax::String,
+        );
+        base.add_attribute(
+            "dc".to_string(),
+            vec![AttributeValue::String("example".to_string())],
+            AttributeSyntax::String,
+        );
+        directory.add_entry(base);
+
+        directory
+    }
+
+    #[test]
+    fn test_handle_bind_operation() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Bind {
+            version: 3,
+            dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
+            auth: BindAuthentication::Simple("password1".to_string()),
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false);
+        
+        assert_eq!(responses.len(), 1);
+        match &responses[0].protocol_op {
+            LdapProtocolOp::BindResponse { result } => {
+                assert_eq!(result.result_code, LdapResultCode::Success);
+            }
+            _ => panic!("Expected BindResponse"),
+        }
+    }
+
+    #[test]
+    fn test_handle_unbind_operation() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Unbind;
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        // Unbind should return no responses
+        assert_eq!(responses.len(), 0);
+    }
+
+    #[test]
+    fn test_handle_search_operation_base_scope() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Search {
+            base_dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
+            scope: SearchScope::BaseObject,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        // Should have 2 responses: 1 entry + done
+        assert_eq!(responses.len(), 2);
+        
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { dn, attributes } => {
+                assert_eq!(dn, "cn=user1,ou=users,dc=example,dc=com");
+                assert!(attributes.contains_key("cn"));
+                assert!(attributes.contains_key("uid"));
+                assert!(attributes.contains_key("mail"));
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+        
+        match &responses[1].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::Success);
+            }
+            _ => panic!("Expected SearchResultDone"),
+        }
+    }
+
+    #[test]
+    fn test_handle_search_operation_single_level() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Search {
+            base_dn: "ou=users,dc=example,dc=com".to_string(),
+            scope: SearchScope::SingleLevel,
+            filter: "(objectClass=person)".to_string(),
+            attributes: vec!["cn".to_string(), "uid".to_string()],
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        // Should have 3 responses: 2 entries + done
+        assert_eq!(responses.len(), 3);
+        
+        // Check that we got both users
+        let entry_dns: Vec<&str> = responses[0..2]
+            .iter()
+            .filter_map(|r| match &r.protocol_op {
+                LdapProtocolOp::SearchResultEntry { dn, .. } => Some(dn.as_str()),
+                _ => None,
+            })
+            .collect();
+        
+        assert!(entry_dns.contains(&"cn=user1,ou=users,dc=example,dc=com"));
+        assert!(entry_dns.contains(&"cn=user2,ou=users,dc=example,dc=com"));
+        
+        // Check that only requested attributes are returned
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { attributes, .. } => {
+                assert!(attributes.contains_key("cn"));
+                assert!(attributes.contains_key("uid"));
+                assert!(!attributes.contains_key("mail")); // Not requested
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
+    fn test_handle_search_operation_subtree() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            filter: "(objectClass=*)".to_string(), // Get all entries
+            attributes: vec![],
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        // Should have 5 responses: 4 entries (2 users + 1 OU + 1 base) + done
+        assert_eq!(responses.len(), 5);
+        
+        match &responses[4].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::Success);
+            }
+            _ => panic!("Expected SearchResultDone"),
+        }
+    }
+
+    #[test]
+    fn test_handle_search_operation_invalid_filter() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::BaseObject,
+            filter: "invalid filter".to_string(), // No parentheses at all
+            attributes: vec![],
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        assert_eq!(responses.len(), 1);
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::ProtocolError);
+                assert!(result.diagnostic_message.contains("Invalid filter"));
+            }
+            _ => panic!("Expected SearchResultDone with error"),
+        }
+    }
+
+    #[test]
+    fn test_handle_compare_operation_match() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Compare {
+            dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
+            attribute: "uid".to_string(),
+            value: "user1".to_string(),
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        assert_eq!(responses.len(), 1);
+        match &responses[0].protocol_op {
+            LdapProtocolOp::CompareResponse { result } => {
+                assert_eq!(result.result_code, LdapResultCode::CompareTrue);
+            }
+            _ => panic!("Expected CompareResponse"),
+        }
+    }
+
+    #[test]
+    fn test_handle_compare_operation_no_match() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Compare {
+            dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
+            attribute: "uid".to_string(),
+            value: "user2".to_string(),
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        assert_eq!(responses.len(), 1);
+        match &responses[0].protocol_op {
+            LdapProtocolOp::CompareResponse { result } => {
+                assert_eq!(result.result_code, LdapResultCode::CompareFalse);
+            }
+            _ => panic!("Expected CompareResponse"),
+        }
+    }
+
+    #[test]
+    fn test_handle_compare_operation_case_insensitive() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Compare {
+            dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
+            attribute: "mail".to_string(),
+            value: "USER1@EXAMPLE.COM".to_string(), // Different case
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        assert_eq!(responses.len(), 1);
+        match &responses[0].protocol_op {
+            LdapProtocolOp::CompareResponse { result } => {
+                assert_eq!(result.result_code, LdapResultCode::CompareTrue);
+            }
+            _ => panic!("Expected CompareResponse"),
+        }
+    }
+
+    #[test]
+    fn test_handle_compare_operation_no_such_attribute() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Compare {
+            dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
+            attribute: "nonexistent".to_string(),
+            value: "value".to_string(),
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        assert_eq!(responses.len(), 1);
+        match &responses[0].protocol_op {
+            LdapProtocolOp::CompareResponse { result } => {
+                assert_eq!(result.result_code, LdapResultCode::NoSuchAttribute);
+                assert!(result.diagnostic_message.contains("Attribute nonexistent not found"));
+            }
+            _ => panic!("Expected CompareResponse"),
+        }
+    }
+
+    #[test]
+    fn test_handle_compare_operation_no_such_object() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Compare {
+            dn: "cn=nonexistent,dc=example,dc=com".to_string(),
+            attribute: "uid".to_string(),
+            value: "value".to_string(),
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        assert_eq!(responses.len(), 1);
+        match &responses[0].protocol_op {
+            LdapProtocolOp::CompareResponse { result } => {
+                assert_eq!(result.result_code, LdapResultCode::NoSuchObject);
+                assert!(result.diagnostic_message.contains("Entry cn=nonexistent,dc=example,dc=com not found"));
+            }
+            _ => panic!("Expected CompareResponse"),
+        }
+    }
+
+    #[test]
+    fn test_message_id_preserved() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let message_id = 42;
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::BaseObject,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+        
+        let responses = handle_operation(message_id, operation, &directory, &auth_handler, true);
+        
+        // All responses should have the same message ID
+        for response in responses {
+            assert_eq!(response.message_id, message_id);
+        }
+    }
+
+    #[test]
+    fn test_search_with_specific_filter() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            filter: "(uid=user1)".to_string(), // Simple filter since complex ones aren't parsed
+            attributes: vec![],
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        // Should find only user1
+        assert_eq!(responses.len(), 2); // 1 entry + done
+        
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { dn, .. } => {
+                assert_eq!(dn, "cn=user1,ou=users,dc=example,dc=com");
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+}
