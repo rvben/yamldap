@@ -1,12 +1,17 @@
 [package]
 name = "yamldap"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 authors = ["Ruben J. Jongejan <ruben.jongejan@gmail.com>"]
 description = "A lightweight LDAP server that serves directory data from YAML files"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/rvben/yamldap"
 readme = "README.md"
+homepage = "https://github.com/rvben/yamldap"
+documentation = "https://docs.rs/yamldap"
+keywords = ["ldap", "yaml", "directory", "authentication", "testing"]
+categories = ["authentication", "development-tools::testing", "network-programming"]
+exclude = ["/.github", "/assets/*.png", "/tests", "*.sh", "*.py", "/coverage"]
 
 [dependencies]
 # Async runtime and networking

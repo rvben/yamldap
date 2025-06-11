@@ -1,5 +1,18 @@
 # yamldap
 
+<div align="center">
+  <img src="https://raw.githubusercontent.com/rvben/yamldap/main/assets/logo.png" alt="yamldap logo" width="400">
+
+  **A lightweight LDAP server that serves directory data from YAML files**
+
+  [![Crates.io](https://img.shields.io/crates/v/yamldap.svg)](https://crates.io/crates/yamldap)
+  [![Documentation](https://docs.rs/yamldap/badge.svg)](https://docs.rs/yamldap)
+  [![License](https://img.shields.io/crates/l/yamldap.svg)](https://github.com/rvben/yamldap#license)
+  [![Build Status](https://img.shields.io/github/workflow/status/rvben/yamldap/CI)](https://github.com/rvben/yamldap/actions)
+</div>
+
+---
+
 A lightweight LDAP server that serves directory data from YAML files, designed for local development and testing.
 
 ## Features
@@ -13,8 +26,15 @@ A lightweight LDAP server that serves directory data from YAML files, designed f
 
 ## Installation
 
+### From Crates.io
+```bash
+cargo install yamldap
+```
+
 ### From Source
 ```bash
+git clone https://github.com/rvben/yamldap
+cd yamldap
 cargo install --path .
 ```
 
@@ -40,11 +60,11 @@ entries:
   - dn: "dc=example,dc=com"
     objectClass: ["top", "domain"]
     dc: "example"
-    
+
   - dn: "ou=users,dc=example,dc=com"
     objectClass: ["top", "organizationalUnit"]
     ou: "users"
-    
+
   - dn: "uid=john,ou=users,dc=example,dc=com"
     objectClass: ["top", "person", "inetOrgPerson"]
     uid: "john"
