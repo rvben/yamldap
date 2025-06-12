@@ -26,3 +26,6 @@ cobertura.xml
 # Environment
 .env
 .env.local
+
+# Assets
+assets/*.png

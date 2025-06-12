@@ -44,17 +44,57 @@ clean:
 run:
 	cargo run -- -f examples/sample_directory.yaml --allow-anonymous
 
-# Build Docker image
+# Build Docker image (local, current platform only)
 docker-build:
-	docker compose build
+	docker build -t yamldap:latest .
+
+# Build Docker image for multiple platforms (requires buildx)
+docker-buildx:
+	docker buildx build --platform linux/amd64,linux/arm64 -t yamldap:latest .
+
+# Build and push to GitHub Container Registry
+docker-push: docker-login
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make docker-push VERSION=0.0.1"; exit 1; fi
+	docker buildx build --platform linux/amd64 \
+		-t ghcr.io/rvben/yamldap:$(VERSION) \
+		-t ghcr.io/rvben/yamldap:latest \
+		--push .
+
+# Build and push multi-platform to GitHub Container Registry
+docker-push-multiplatform: docker-login
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make docker-push-multiplatform VERSION=0.0.1"; exit 1; fi
+	docker buildx build --platform linux/amd64,linux/arm64 \
+		-t ghcr.io/rvben/yamldap:$(VERSION) \
+		-t ghcr.io/rvben/yamldap:latest \
+		--push .
+
+# Login to GitHub Container Registry
+docker-login:
+	@echo "Logging into GitHub Container Registry..."
+	@echo "$$GITHUB_TOKEN" | docker login ghcr.io -u rvben --password-stdin
+
+# Setup Docker buildx for multi-platform builds
+docker-setup:
+	docker buildx create --name yamldap-builder --use || true
+	docker buildx inspect --bootstrap
 
 # Run with Docker
 docker-run:
+	docker run -d --name yamldap -p 389:389 -v $(PWD)/examples/sample_directory.yaml:/data/directory.yaml yamldap:latest -f /data/directory.yaml --allow-anonymous
+
+# Run with Docker Compose (local build)
+docker-compose-up:
 	docker compose up -d
 
-# Stop Docker containers
+# Run with Docker Compose (from registry)
+docker-compose-registry:
+	docker compose -f compose.registry.yml up -d
+
+# Stop Docker container
 docker-stop:
-	docker compose down
+	docker stop yamldap && docker rm yamldap || true
+	docker compose down || true
+
 
 # Run linting
 lint:
@@ -75,6 +115,11 @@ check:
 # Run all checks (format, lint, type check, test)
 ci: fmt-check check lint test
 
+# Test with LDAP client
+test-ldap:
+	@echo "Testing LDAP server..."
+	@./test_ldap.py || true
+
 # Help target
 help:
 	@echo "Available targets:"
@@ -88,9 +133,16 @@ help:
 	@echo "  make bench          - Run benchmarks"
 	@echo "  make clean          - Clean build artifacts"
 	@echo "  make run            - Run the server locally"
-	@echo "  make docker-build   - Build Docker image"
+	@echo "  make docker-build   - Build Docker image (local, current platform)"
+	@echo "  make docker-buildx  - Build Docker image for multiple platforms"
+	@echo "  make docker-push VERSION=x.x.x - Build and push to ghcr.io (AMD64)"
+	@echo "  make docker-push-multiplatform VERSION=x.x.x - Push multi-arch to ghcr.io"
+	@echo "  make docker-setup   - Setup Docker buildx for multi-platform builds"
 	@echo "  make docker-run     - Run with Docker"
+	@echo "  make docker-compose-up - Run with Docker Compose (local build)"
+	@echo "  make docker-compose-registry - Run with Docker Compose (from registry)"
 	@echo "  make docker-stop    - Stop Docker containers"
+	@echo "  make test-ldap      - Test with LDAP client"
 	@echo "  make lint           - Run linting with clippy"
 	@echo "  make fmt            - Format code"
 	@echo "  make fmt-check      - Check code formatting"

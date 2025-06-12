@@ -39,14 +39,25 @@ cargo install --path .
 ```
 
 ### Using Docker
+
+Pull from GitHub Container Registry:
+```bash
+# Pull the latest version
+docker pull ghcr.io/rvben/yamldap:latest
+
+# Run with your YAML directory file
+docker run -p 389:389 -v $(pwd)/directory.yaml:/data/directory.yaml ghcr.io/rvben/yamldap:latest -f /data/directory.yaml
+```
+
+Or build locally:
 ```bash
 docker build -t yamldap .
-docker run -p 389:389 -v $(pwd)/examples/sample_directory.yaml:/data/directory.yaml yamldap
+docker run -p 389:389 -v $(pwd)/examples/sample_directory.yaml:/data/directory.yaml yamldap:latest -f /data/directory.yaml
 ```
 
 ### Using Docker Compose
 ```bash
-docker-compose up
+docker compose up
 ```
 
 ## Quick Start
@@ -79,8 +90,11 @@ entries:
 # On a non-privileged port
 yamldap -f directory.yaml --port 3389
 
-# Or with Docker
-docker run -p 389:389 -v $(pwd)/directory.yaml:/data/directory.yaml yamldap
+# Or with Docker from registry
+docker run -p 389:389 -v $(pwd)/directory.yaml:/data/directory.yaml ghcr.io/rvben/yamldap:latest -f /data/directory.yaml
+
+# Or with anonymous bind enabled
+docker run -p 389:389 -v $(pwd)/directory.yaml:/data/directory.yaml ghcr.io/rvben/yamldap:latest -f /data/directory.yaml --allow-anonymous
 ```
 
 3. Test with LDAP tools:

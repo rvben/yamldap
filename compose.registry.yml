@@ -1,0 +1,24 @@
+---
+# Docker Compose configuration using pre-built image from registry
+# Useful for quick testing without building locally
+services:
+  yamldap:
+    image: ghcr.io/rvben/yamldap:latest
+    ports:
+      - "389:389"
+    volumes:
+      - ./examples/sample_directory.yaml:/data/directory.yaml:ro
+    environment:
+      - RUST_LOG=info
+    command: ["-f", "/data/directory.yaml", "--allow-anonymous"]
+
+  # Optional: LDAP admin tool for testing
+  ldapadmin:
+    image: osixia/phpldapadmin:latest
+    environment:
+      - PHPLDAPADMIN_LDAP_HOSTS=yamldap
+      - PHPLDAPADMIN_HTTPS=false
+    ports:
+      - "8080:80"
+    depends_on:
+      - yamldap
