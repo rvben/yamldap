@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.10] - 2025-06-13
+
+### Added
+- Enhanced LDAP filter support with two new filter types:
+  - Approximate match filters `(attr~=value)` for fuzzy matching
+  - Extensible match filters `(attr:=value)`, `(attr:dn:=value)`, `(attr:matchingRule:=value)`
+- Support for LDAP filter escape sequences (e.g., `\28` for `(`, `\2a` for `*`)
+- Common matching rules support: caseIgnoreMatch (2.5.13.2), caseExactMatch (2.5.13.5)
+- DN component matching with `:dn:` modifier in extensible filters
+- Protocol decoder support for approximate match (tag 0xA8) and extensible match (tag 0xA9) filters
+- Comprehensive test coverage for all new filter types
+
+### Changed
+- Improved filter parser to handle escaped characters in filter values
+- Enhanced protocol decoder to properly parse complex extensible match filters
+
+### Fixed
+- Filter values now properly handle escape sequences according to RFC 4515
+
 ## [0.0.9] - 2025-06-13
 
 ### Fixed
