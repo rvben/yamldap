@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.5] - 2025-06-13
+
+### Fixed
+- Reworked Docker image building to push platform-specific images before creating multi-arch manifest
+- Added registry access verification step to debug authentication issues
+- Fixed step ordering to ensure version extraction happens before registry operations
+
+### Changed
+- Split multi-platform Docker build into separate platform builds followed by manifest creation
+- Added explicit buildx commands for better control over the build process
+
 ## [0.0.4] - 2025-06-13
 
 ### Fixed

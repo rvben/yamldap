@@ -167,6 +167,19 @@ jobs:
         with:
           path: artifacts
 
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION=latest
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          # Ensure lowercase for container registry
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "repo_owner=$REPO_OWNER" >> $GITHUB_OUTPUT
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -178,15 +191,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version
-        id: version
+      - name: Verify registry access
+        if: ${{ inputs.dry_run != true }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
-          else
-            VERSION=latest
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Checking registry access for ${{ github.actor }}..."
+          echo "Repository: ${{ github.repository }}"
+          echo "Registry URL: ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap"
+          echo "Testing docker login..."
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          echo "Login successful!"
 
       - name: Prepare binaries for multi-arch build
         run: |
@@ -209,17 +222,30 @@ jobs:
           ENTRYPOINT ["/yamldap"]
           EOF
 
-      - name: Build and push multi-arch image
+      - name: Build and push images
         if: ${{ inputs.dry_run != true }}
-        uses: docker/build-push-action@v5
-        with:
-          context: docker-context
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: false
-          tags: |
-            ghcr.io/rvben/yamldap:${{ steps.version.outputs.version }}
-            ghcr.io/rvben/yamldap:latest
+        run: |
+          # Build for each platform separately using buildx
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg TARGETARCH=amd64 \
+            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64 \
+            --push \
+            docker-context
+          
+          docker buildx build \
+            --platform linux/arm64 \
+            --build-arg TARGETARCH=arm64 \
+            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64 \
+            --push \
+            docker-context
+          
+          # Create and push multi-arch manifests
+          docker buildx imagetools create \
+            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }} \
+            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:latest \
+            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64 \
+            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64
 
       - name: Test Docker build (dry run)
         if: ${{ inputs.dry_run == true }}
@@ -229,8 +255,8 @@ jobs:
           ls -la artifacts/
           echo ""
           echo "- Would create multi-arch image with tags:"
-          echo "  - ghcr.io/rvben/yamldap:${{ steps.version.outputs.version }}"
-          echo "  - ghcr.io/rvben/yamldap:latest"
+          echo "  - ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}"
+          echo "  - ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:latest"
           echo "- Platforms: linux/amd64, linux/arm64"
 
           # Test build for current platform
