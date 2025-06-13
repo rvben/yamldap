@@ -146,7 +146,7 @@ jobs:
       - name: Publish to crates.io
         if: ${{ inputs.dry_run != true }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_IO_TOKEN }}
         run: cargo publish --locked
 
       - name: Test crates.io publish (dry run)
@@ -192,14 +192,14 @@ jobs:
         run: |
           # Create build context directory
           mkdir -p docker-context
-          
+
           # Copy binaries with architecture-specific names
           cp artifacts/yamldap-linux-amd64/yamldap docker-context/yamldap-amd64
           cp artifacts/yamldap-linux-arm64/yamldap docker-context/yamldap-arm64
-          
+
           # Make binaries executable
           chmod +x docker-context/yamldap-*
-          
+
           # Create multi-arch Dockerfile
           cat > docker-context/Dockerfile << 'EOF'
           FROM scratch
@@ -216,6 +216,7 @@ jobs:
           context: docker-context
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: false
           tags: |
             ghcr.io/rvben/yamldap:${{ steps.version.outputs.version }}
             ghcr.io/rvben/yamldap:latest
@@ -231,7 +232,7 @@ jobs:
           echo "  - ghcr.io/rvben/yamldap:${{ steps.version.outputs.version }}"
           echo "  - ghcr.io/rvben/yamldap:latest"
           echo "- Platforms: linux/amd64, linux/arm64"
-          
+
           # Test build for current platform
           mkdir -p test-context
           if [ -f "artifacts/yamldap-linux-amd64/yamldap" ]; then
