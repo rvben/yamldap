@@ -3,7 +3,7 @@
 # Note: For releases, we use Dockerfile.release with pre-built binaries for faster CI/CD
 
 # Build stage
-FROM rust:1.87 as builder
+FROM rust:1.87 AS builder
 
 # Install musl tools for static linking
 RUN apt-get update && \

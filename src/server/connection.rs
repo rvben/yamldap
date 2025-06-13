@@ -109,6 +109,15 @@ fn protocol_to_operation(msg: &LdapMessage) -> Option<LdapOperation> {
             filter: filter.clone(),
             attributes: attributes.clone(),
         }),
+        LdapProtocolOp::CompareRequest {
+            dn,
+            attribute,
+            value,
+        } => Some(LdapOperation::Compare {
+            dn: dn.clone(),
+            attribute: attribute.clone(),
+            value: value.clone(),
+        }),
         _ => None,
     }
 }
@@ -212,6 +221,32 @@ mod tests {
                 assert_eq!(attributes, vec!["cn", "mail"]);
             }
             _ => panic!("Expected Search operation"),
+        }
+    }
+
+    #[test]
+    fn test_protocol_to_operation_compare() {
+        let msg = LdapMessage {
+            message_id: 4,
+            protocol_op: LdapProtocolOp::CompareRequest {
+                dn: "cn=admin,ou=Engineering,dc=example,dc=com".to_string(),
+                attribute: "cn".to_string(),
+                value: "admin".to_string(),
+            },
+        };
+
+        let operation = protocol_to_operation(&msg).unwrap();
+        match operation {
+            LdapOperation::Compare {
+                dn,
+                attribute,
+                value,
+            } => {
+                assert_eq!(dn, "cn=admin,ou=Engineering,dc=example,dc=com");
+                assert_eq!(attribute, "cn");
+                assert_eq!(value, "admin");
+            }
+            _ => panic!("Expected Compare operation"),
         }
     }
 
