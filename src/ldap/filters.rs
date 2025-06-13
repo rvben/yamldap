@@ -112,51 +112,112 @@ pub fn parse_ldap_filter(filter_str: &str) -> crate::Result<LdapFilter> {
         ));
     }
 
-    // For now, implement a basic parser for common cases
-    // A full implementation would need a proper LDAP filter parser
+    // Check if filter is wrapped in parentheses
+    if !filter_str.starts_with('(') || !filter_str.ends_with(')') {
+        return Err(crate::YamlLdapError::Protocol(
+            "Filter must be wrapped in parentheses".to_string(),
+        ));
+    }
+
+    // Remove outer parentheses
+    let inner = &filter_str[1..filter_str.len() - 1];
+
+    // Check for composite filters
+    if inner.starts_with('&') {
+        // AND filter: (&(filter1)(filter2)...)
+        let filters = parse_composite_filters(&inner[1..])?;
+        return Ok(LdapFilter::And(filters));
+    } else if inner.starts_with('|') {
+        // OR filter: (|(filter1)(filter2)...)
+        let filters = parse_composite_filters(&inner[1..])?;
+        return Ok(LdapFilter::Or(filters));
+    } else if inner.starts_with('!') {
+        // NOT filter: (!(filter))
+        let filter = parse_ldap_filter(&inner[1..])?;
+        return Ok(LdapFilter::Not(Box::new(filter)));
+    }
 
     // Check for presence filter: (attr=*)
-    if filter_str.ends_with("=*)") && filter_str.starts_with('(') {
-        let attr = filter_str[1..filter_str.len() - 3].to_string();
+    if inner.ends_with("=*") {
+        let attr = inner[..inner.len() - 2].to_string();
         return Ok(LdapFilter::Present(attr));
     }
 
-    // Check for equality filter: (attr=value)
-    if let Some(eq_pos) = filter_str.find('=') {
-        if filter_str.starts_with('(') && filter_str.ends_with(')') {
-            let attr = filter_str[1..eq_pos].to_string();
-            let value = filter_str[eq_pos + 1..filter_str.len() - 1].to_string();
+    // Check for comparison filters
+    if let Some(eq_pos) = inner.find('=') {
+        let attr = inner[..eq_pos].to_string();
+        let value = inner[eq_pos + 1..].to_string();
 
-            // Check for substring filter
-            if value.contains('*') && value != "*" {
-                let parts: Vec<&str> = value.split('*').collect();
-                let substring = SubstringFilter {
-                    initial: if parts[0].is_empty() {
-                        None
-                    } else {
-                        Some(parts[0].to_string())
-                    },
-                    any: parts[1..parts.len() - 1]
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect(),
-                    final_: if parts[parts.len() - 1].is_empty() {
-                        None
-                    } else {
-                        Some(parts[parts.len() - 1].to_string())
-                    },
-                };
-                return Ok(LdapFilter::Substring(attr, substring));
+        // Check for substring filter
+        if value.contains('*') {
+            let parts: Vec<&str> = value.split('*').collect();
+            let substring = SubstringFilter {
+                initial: if parts[0].is_empty() {
+                    None
+                } else {
+                    Some(parts[0].to_string())
+                },
+                any: parts[1..parts.len() - 1]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                final_: if parts[parts.len() - 1].is_empty() {
+                    None
+                } else {
+                    Some(parts[parts.len() - 1].to_string())
+                },
+            };
+            return Ok(LdapFilter::Substring(attr, substring));
+        }
+
+        return Ok(LdapFilter::Equality(attr, value));
+    } else if let Some(ge_pos) = inner.find(">=") {
+        let attr = inner[..ge_pos].to_string();
+        let value = inner[ge_pos + 2..].to_string();
+        return Ok(LdapFilter::GreaterOrEqual(attr, value));
+    } else if let Some(le_pos) = inner.find("<=") {
+        let attr = inner[..le_pos].to_string();
+        let value = inner[le_pos + 2..].to_string();
+        return Ok(LdapFilter::LessOrEqual(attr, value));
+    }
+
+    Err(crate::YamlLdapError::Protocol(
+        format!("Invalid filter format: {}", filter_str),
+    ))
+}
+
+// Helper function to parse composite filters
+fn parse_composite_filters(s: &str) -> crate::Result<Vec<LdapFilter>> {
+    let mut filters = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+
+    for (i, ch) in s.chars().enumerate() {
+        match ch {
+            '(' => {
+                if depth == 0 {
+                    start = i;
+                }
+                depth += 1;
             }
-
-            return Ok(LdapFilter::Equality(attr, value));
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let filter_str = &s[start..=i];
+                    filters.push(parse_ldap_filter(filter_str)?);
+                }
+            }
+            _ => {}
         }
     }
 
-    // If we get here, the filter is not properly formatted
-    Err(crate::YamlLdapError::Protocol(
-        "Invalid filter format".to_string(),
-    ))
+    if depth != 0 {
+        return Err(crate::YamlLdapError::Protocol(
+            "Unbalanced parentheses in filter".to_string(),
+        ));
+    }
+
+    Ok(filters)
 }
 
 #[cfg(test)]
@@ -194,5 +255,116 @@ mod tests {
             filter,
             LdapFilter::Equality("uid".to_string(), "john".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_and_filter() {
+        let filter = parse_ldap_filter("(&(objectClass=person)(uid=admin))").unwrap();
+        match filter {
+            LdapFilter::And(filters) => {
+                assert_eq!(filters.len(), 2);
+                assert_eq!(
+                    filters[0],
+                    LdapFilter::Equality("objectClass".to_string(), "person".to_string())
+                );
+                assert_eq!(
+                    filters[1],
+                    LdapFilter::Equality("uid".to_string(), "admin".to_string())
+                );
+            }
+            _ => panic!("Expected AND filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_or_filter() {
+        let filter = parse_ldap_filter("(|(uid=user1)(uid=user2))").unwrap();
+        match filter {
+            LdapFilter::Or(filters) => {
+                assert_eq!(filters.len(), 2);
+                assert_eq!(
+                    filters[0],
+                    LdapFilter::Equality("uid".to_string(), "user1".to_string())
+                );
+                assert_eq!(
+                    filters[1],
+                    LdapFilter::Equality("uid".to_string(), "user2".to_string())
+                );
+            }
+            _ => panic!("Expected OR filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_not_filter() {
+        let filter = parse_ldap_filter("(!(uid=admin))").unwrap();
+        match filter {
+            LdapFilter::Not(inner) => {
+                assert_eq!(
+                    *inner,
+                    LdapFilter::Equality("uid".to_string(), "admin".to_string())
+                );
+            }
+            _ => panic!("Expected NOT filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_nested_filters() {
+        let filter = parse_ldap_filter("(&(objectClass=person)(|(uid=user1)(uid=user2)))").unwrap();
+        match filter {
+            LdapFilter::And(filters) => {
+                assert_eq!(filters.len(), 2);
+                assert_eq!(
+                    filters[0],
+                    LdapFilter::Equality("objectClass".to_string(), "person".to_string())
+                );
+                match &filters[1] {
+                    LdapFilter::Or(or_filters) => {
+                        assert_eq!(or_filters.len(), 2);
+                    }
+                    _ => panic!("Expected nested OR filter"),
+                }
+            }
+            _ => panic!("Expected AND filter"),
+        }
+    }
+
+    #[test]
+    fn test_filter_evaluation() {
+        use crate::directory::entry::{LdapEntry, AttributeValue, AttributeSyntax};
+        
+        let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
+        entry.add_attribute(
+            "uid".to_string(),
+            vec![AttributeValue::String("testuser".to_string())],
+            AttributeSyntax::String,
+        );
+        entry.add_attribute(
+            "objectClass".to_string(),
+            vec![AttributeValue::String("person".to_string())],
+            AttributeSyntax::String,
+        );
+
+        // Test AND filter
+        let filter = parse_ldap_filter("(&(objectClass=person)(uid=testuser))").unwrap();
+        assert!(filter.matches(&entry));
+
+        let filter = parse_ldap_filter("(&(objectClass=person)(uid=wronguser))").unwrap();
+        assert!(!filter.matches(&entry));
+
+        // Test OR filter
+        let filter = parse_ldap_filter("(|(uid=testuser)(uid=otheruser))").unwrap();
+        assert!(filter.matches(&entry));
+
+        let filter = parse_ldap_filter("(|(uid=wronguser)(uid=otheruser))").unwrap();
+        assert!(!filter.matches(&entry));
+
+        // Test NOT filter
+        let filter = parse_ldap_filter("(!(uid=wronguser))").unwrap();
+        assert!(filter.matches(&entry));
+
+        let filter = parse_ldap_filter("(!(uid=testuser))").unwrap();
+        assert!(!filter.matches(&entry));
     }
 }

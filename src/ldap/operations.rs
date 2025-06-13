@@ -586,4 +586,143 @@ mod tests {
             _ => panic!("Expected SearchResultEntry"),
         }
     }
+
+    #[test]
+    fn test_search_returns_only_matching_entries() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        // Test 1: Search for specific uid - should return only that user
+        let operation = LdapOperation::Search {
+            base_dn: "ou=users,dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            filter: "(uid=user1)".to_string(),
+            attributes: vec!["uid".to_string(), "cn".to_string()],
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        // Count actual entries (exclude SearchResultDone)
+        let entry_count = responses.iter().filter(|r| matches!(
+            r.protocol_op, 
+            LdapProtocolOp::SearchResultEntry { .. }
+        )).count();
+        
+        assert_eq!(entry_count, 1, "Should return exactly 1 user with uid=user1");
+        
+        // Verify it's the right user
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { dn, attributes } => {
+                assert_eq!(dn, "cn=user1,ou=users,dc=example,dc=com");
+                assert!(attributes.contains_key("uid"));
+                assert_eq!(attributes.get("uid").unwrap()[0], "user1");
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
+    fn test_search_base_scope_returns_only_base() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        // Search with BASE scope should return only the specified DN
+        let operation = LdapOperation::Search {
+            base_dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
+            scope: SearchScope::BaseObject,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        let entry_count = responses.iter().filter(|r| matches!(
+            r.protocol_op, 
+            LdapProtocolOp::SearchResultEntry { .. }
+        )).count();
+        
+        assert_eq!(entry_count, 1, "BASE scope should return exactly 1 entry");
+        
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { dn, .. } => {
+                assert_eq!(dn, "cn=user1,ou=users,dc=example,dc=com", 
+                    "BASE scope should return only the base DN");
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
+    fn test_search_returns_empty_for_no_matches() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        // Search for non-existent uid
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            filter: "(uid=nonexistent)".to_string(),
+            attributes: vec![],
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        assert_eq!(responses.len(), 1, "Should only have SearchResultDone");
+        
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::Success);
+            }
+            _ => panic!("Expected only SearchResultDone"),
+        }
+    }
+
+    #[test]
+    fn test_search_onelevel_scope() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        // Search with ONELEVEL scope from dc=example,dc=com
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::SingleLevel,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec!["ou".to_string()],
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        let entries: Vec<&str> = responses.iter().filter_map(|r| match &r.protocol_op {
+            LdapProtocolOp::SearchResultEntry { dn, .. } => Some(dn.as_str()),
+            _ => None,
+        }).collect();
+        
+        assert_eq!(entries.len(), 1, "ONELEVEL from base should find 1 OU");
+        assert_eq!(entries[0], "ou=users,dc=example,dc=com");
+    }
+
+    #[test]
+    fn test_search_and_filter() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        
+        // Test AND filter: (&(objectClass=person)(uid=user1))
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            filter: "(&(objectClass=person)(uid=user1))".to_string(),
+            attributes: vec![],
+        };
+        
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        
+        let entries: Vec<&str> = responses.iter().filter_map(|r| match &r.protocol_op {
+            LdapProtocolOp::SearchResultEntry { dn, .. } => Some(dn.as_str()),
+            _ => None,
+        }).collect();
+        
+        // Should find only user1 (not user2, and not non-person entries)
+        assert_eq!(entries.len(), 1, "AND filter should return exactly 1 match");
+        assert_eq!(entries[0], "cn=user1,ou=users,dc=example,dc=com");
+    }
 }

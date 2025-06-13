@@ -133,6 +133,142 @@ impl SimpleLdapCodec {
             buf.put_u32(value);
         }
     }
+
+    fn read_filter(cursor: &mut Cursor<&[u8]>) -> io::Result<String> {
+        if cursor.remaining() < 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "No filter data",
+            ));
+        }
+
+        let tag = cursor.get_u8();
+        let length = Self::read_length(cursor)?;
+        
+        // LDAP Filter tags:
+        // 0xA0 - AND
+        // 0xA1 - OR
+        // 0xA2 - NOT
+        // 0xA3 - Equality Match
+        // 0xA4 - Substring
+        // 0xA5 - Greater or Equal
+        // 0xA6 - Less or Equal
+        // 0x87 - Present (context-specific primitive 7)
+        // 0xA8 - Approximate Match
+        // 0xA9 - Extensible Match
+        
+        match tag {
+            0xA0 => {
+                // AND filter
+                let __end_pos = cursor.position() + length as u64;
+                let mut filters = Vec::new();
+                while cursor.position() < _end_pos {
+                    filters.push(Self::read_filter(cursor)?);
+                }
+                Ok(format!("(&{})", filters.join("")))
+            }
+            0xA1 => {
+                // OR filter
+                let __end_pos = cursor.position() + length as u64;
+                let mut filters = Vec::new();
+                while cursor.position() < _end_pos {
+                    filters.push(Self::read_filter(cursor)?);
+                }
+                Ok(format!("(|{})", filters.join("")))
+            }
+            0xA2 => {
+                // NOT filter
+                let filter = Self::read_filter(cursor)?;
+                Ok(format!("(!{})", filter))
+            }
+            0xA3 => {
+                // Equality Match: (attr=value)
+                let __end_pos = cursor.position() + length as u64;
+                let attr = Self::read_string(cursor)?;
+                let value = Self::read_string(cursor)?;
+                Ok(format!("({}={})", attr, value))
+            }
+            0xA4 => {
+                // Substring filter: (attr=*value*)
+                let __end_pos = cursor.position() + length as u64;
+                let attr = Self::read_string(cursor)?;
+                
+                // Read substring components
+                if cursor.position() < _end_pos && cursor.get_ref()[cursor.position() as usize] == 0x30 {
+                    cursor.get_u8(); // SEQUENCE tag
+                    let _seq_len = Self::read_length(cursor)?;
+                    
+                    let mut parts = Vec::new();
+                    let mut has_initial = false;
+                    let mut has_final = false;
+                    
+                    while cursor.position() < _end_pos {
+                        let sub_tag = cursor.get_u8();
+                        let sub_len = Self::read_length(cursor)?;
+                        let mut bytes = vec![0u8; sub_len];
+                        cursor.copy_to_slice(&mut bytes);
+                        let value = String::from_utf8(bytes).map_err(|_| {
+                            io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
+                        })?;
+                        
+                        match sub_tag {
+                            0x80 => { // initial
+                                has_initial = true;
+                                parts.insert(0, value);
+                            }
+                            0x81 => { // any
+                                parts.push(format!("*{}", value));
+                            }
+                            0x82 => { // final
+                                has_final = true;
+                                parts.push(format!("*{}", value));
+                            }
+                            _ => {}
+                        }
+                    }
+                    
+                    let mut filter = format!("({}=", attr);
+                    if !has_initial {
+                        filter.push('*');
+                    }
+                    filter.push_str(&parts.join(""));
+                    if !has_final {
+                        filter.push('*');
+                    }
+                    filter.push(')');
+                    Ok(filter)
+                } else {
+                    Ok(format!("({}=*)", attr))
+                }
+            }
+            0xA5 => {
+                // Greater or Equal: (attr>=value)
+                let attr = Self::read_string(cursor)?;
+                let value = Self::read_string(cursor)?;
+                Ok(format!("({}>={})", attr, value))
+            }
+            0xA6 => {
+                // Less or Equal: (attr<=value)
+                let attr = Self::read_string(cursor)?;
+                let value = Self::read_string(cursor)?;
+                Ok(format!("({}<={})", attr, value))
+            }
+            0x87 => {
+                // Present: (attr=*)
+                let mut bytes = vec![0u8; length];
+                cursor.copy_to_slice(&mut bytes);
+                let attr = String::from_utf8(bytes).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
+                })?;
+                Ok(format!("({}=*)", attr))
+            }
+            _ => {
+                // Unknown filter type, skip it
+                cursor.set_position(cursor.position() + length as u64);
+                Ok("(objectClass=*)".to_string()) // Default fallback
+            }
+        }
+    }
 }
 
 impl Decoder for SimpleLdapCodec {
@@ -230,17 +366,98 @@ impl Decoder for SimpleLdapCodec {
             LDAP_UNBIND_REQUEST => LdapProtocolOp::UnbindRequest,
 
             LDAP_SEARCH_REQUEST => {
-                // For now, return a simple search request
-                // Full implementation would parse all search parameters
+                // Read search request length
+                let _length = Self::read_length(&mut cursor)?;
+                
+                // Read base DN
+                let base_dn = Self::read_string(&mut cursor)?;
+                
+                // Read scope (ENUMERATED)
+                if cursor.remaining() < 1 || cursor.get_u8() != 0x0A {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Expected ENUMERATED for scope",
+                    ));
+                }
+                let scope_len = Self::read_length(&mut cursor)?;
+                if scope_len != 1 || cursor.remaining() < 1 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Invalid scope",
+                    ));
+                }
+                let scope_value = cursor.get_u8();
+                let scope = match scope_value {
+                    0 => SearchScope::BaseObject,
+                    1 => SearchScope::SingleLevel,
+                    2 => SearchScope::WholeSubtree,
+                    _ => SearchScope::WholeSubtree, // Default to subtree
+                };
+                
+                // Read derefAliases (ENUMERATED)
+                if cursor.remaining() < 1 || cursor.get_u8() != 0x0A {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Expected ENUMERATED for derefAliases",
+                    ));
+                }
+                let deref_len = Self::read_length(&mut cursor)?;
+                if deref_len != 1 || cursor.remaining() < 1 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Invalid derefAliases",
+                    ));
+                }
+                let _deref_value = cursor.get_u8(); // We'll use NeverDerefAliases for now
+                
+                // Read sizeLimit (INTEGER)
+                let size_limit = Self::read_integer(&mut cursor)?;
+                
+                // Read timeLimit (INTEGER)
+                let time_limit = Self::read_integer(&mut cursor)?;
+                
+                // Read typesOnly (BOOLEAN)
+                if cursor.remaining() < 1 || cursor.get_u8() != 0x01 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Expected BOOLEAN for typesOnly",
+                    ));
+                }
+                let bool_len = Self::read_length(&mut cursor)?;
+                if bool_len != 1 || cursor.remaining() < 1 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Invalid boolean",
+                    ));
+                }
+                let types_only = cursor.get_u8() != 0x00;
+                
+                // Read filter - this is complex, so we'll read it as a blob for now
+                // and convert to string representation
+                let filter = Self::read_filter(&mut cursor)?;
+                
+                // Read attributes (SEQUENCE OF OCTET STRING)
+                let mut attributes = Vec::new();
+                if cursor.remaining() > 0 && cursor.get_ref()[cursor.position() as usize] == 0x30 {
+                    cursor.get_u8(); // SEQUENCE tag
+                    let attrs_len = Self::read_length(&mut cursor)?;
+                    let attrs_end = cursor.position() + attrs_len as u64;
+                    
+                    while cursor.position() < attrs_end {
+                        let attr = Self::read_string(&mut cursor)?;
+                        attributes.push(attr);
+                    }
+                }
+                
                 LdapProtocolOp::SearchRequest {
-                    base_dn: String::new(),
-                    scope: SearchScope::WholeSubtree,
+                    base_dn,
+                    scope,
                     deref_aliases: DerefAliases::NeverDerefAliases,
-                    size_limit: 0,
-                    time_limit: 0,
-                    types_only: false,
-                    filter: "(objectClass=*)".to_string(),
-                    attributes: vec![],
+                    size_limit,
+                    time_limit,
+                    types_only,
+                    filter,
+                    attributes,
                 }
             }
 
