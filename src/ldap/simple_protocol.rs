@@ -14,6 +14,8 @@ const LDAP_UNBIND_REQUEST: u8 = 0x42;
 const LDAP_SEARCH_REQUEST: u8 = 0x63;
 const LDAP_SEARCH_RESULT_ENTRY: u8 = 0x64;
 const LDAP_SEARCH_RESULT_DONE: u8 = 0x65;
+const LDAP_COMPARE_REQUEST: u8 = 0x6e;
+const LDAP_COMPARE_RESPONSE: u8 = 0x6f;
 
 pub struct SimpleLdapCodec;
 
@@ -462,6 +464,40 @@ impl Decoder for SimpleLdapCodec {
                 }
             }
 
+            LDAP_COMPARE_REQUEST => {
+                // Read compare request length
+                let _length = Self::read_length(&mut cursor)?;
+
+                // Read DN
+                let dn = Self::read_string(&mut cursor)?;
+
+                // Read AttributeValueAssertion (SEQUENCE)
+                if cursor.remaining() < 1 || cursor.get_u8() != 0x30 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Expected SEQUENCE for AttributeValueAssertion",
+                    ));
+                }
+                let ava_len = Self::read_length(&mut cursor)?;
+                let ava_end = cursor.position() + ava_len as u64;
+
+                // Read attribute description
+                let attribute = Self::read_string(&mut cursor)?;
+
+                // Read assertion value
+                let value = if cursor.position() < ava_end {
+                    Self::read_string(&mut cursor)?
+                } else {
+                    String::new()
+                };
+
+                LdapProtocolOp::CompareRequest {
+                    dn,
+                    attribute,
+                    value,
+                }
+            }
+
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -574,6 +610,24 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
                 content.put_u8(LDAP_SEARCH_RESULT_DONE);
                 Self::write_length(&mut content, done_content.len());
                 content.put(done_content);
+            }
+
+            LdapProtocolOp::CompareResponse { ref result } => {
+                let mut response_content = BytesMut::new();
+
+                // Write result code
+                Self::write_integer(&mut response_content, result.result_code as u32);
+
+                // Write matched DN
+                Self::write_string(&mut response_content, &result.matched_dn);
+
+                // Write diagnostic message
+                Self::write_string(&mut response_content, &result.diagnostic_message);
+
+                // Wrap compare response
+                content.put_u8(LDAP_COMPARE_RESPONSE);
+                Self::write_length(&mut content, response_content.len());
+                content.put(response_content);
             }
 
             _ => {
@@ -905,5 +959,107 @@ mod tests {
         assert!(result.is_ok());
         let msg = result.unwrap().unwrap();
         assert_eq!(msg.message_id, 1);
+    }
+
+    #[test]
+    fn test_decode_compare_request() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::new();
+
+        // Build the compare request content first
+        let mut compare_content = BytesMut::new();
+
+        // DN
+        compare_content.put_u8(0x04); // OCTET STRING
+        compare_content.put_u8(0x0e); // length 14
+        compare_content.put_slice(b"cn=test,dc=com");
+
+        // AttributeValueAssertion SEQUENCE
+        compare_content.put_u8(0x30); // SEQUENCE
+        compare_content.put_u8(0x0a); // length 10
+
+        // Attribute
+        compare_content.put_u8(0x04); // OCTET STRING
+        compare_content.put_u8(0x02); // length 2
+        compare_content.put_slice(b"cn");
+
+        // Value
+        compare_content.put_u8(0x04); // OCTET STRING
+        compare_content.put_u8(0x04); // length 4
+        compare_content.put_slice(b"test");
+
+        let compare_len = compare_content.len();
+
+        // Build the message
+        let mut message_content = BytesMut::new();
+
+        // Message ID
+        message_content.put_u8(0x02); // INTEGER
+        message_content.put_u8(0x01); // length 1
+        message_content.put_u8(0x01); // value 1
+
+        // CompareRequest [APPLICATION 14]
+        message_content.put_u8(0x6e); // Compare request tag
+        message_content.put_u8(compare_len as u8); // length
+        message_content.put(compare_content);
+
+        // Wrap in SEQUENCE
+        buf.put_u8(0x30); // SEQUENCE
+        buf.put_u8(message_content.len() as u8);
+        buf.put(message_content);
+
+        let result = codec.decode(&mut buf);
+        if let Err(e) = &result {
+            panic!("Decode failed: {:?}", e);
+        }
+        assert!(result.is_ok());
+        let msg = result.unwrap().unwrap();
+        assert_eq!(msg.message_id, 1);
+
+        match msg.protocol_op {
+            LdapProtocolOp::CompareRequest {
+                dn,
+                attribute,
+                value,
+            } => {
+                assert_eq!(dn, "cn=test,dc=com");
+                assert_eq!(attribute, "cn");
+                assert_eq!(value, "test");
+            }
+            _ => panic!("Expected CompareRequest"),
+        }
+    }
+
+    #[test]
+    fn test_encode_compare_response() {
+        let mut codec = SimpleLdapCodec;
+
+        // Test CompareTrue response
+        let msg = LdapMessage {
+            message_id: 1,
+            protocol_op: LdapProtocolOp::CompareResponse {
+                result: LdapResult {
+                    result_code: LdapResultCode::CompareTrue,
+                    matched_dn: "cn=test,dc=com".to_string(),
+                    diagnostic_message: String::new(),
+                },
+            },
+        };
+
+        let mut buf = BytesMut::new();
+        let result = codec.encode(msg, &mut buf);
+        assert!(result.is_ok());
+        assert!(!buf.is_empty());
+        assert_eq!(buf[0], 0x30); // SEQUENCE tag
+
+        // Verify the response tag is correct
+        let mut found_response_tag = false;
+        for i in 0..buf.len() {
+            if buf[i] == LDAP_COMPARE_RESPONSE {
+                found_response_tag = true;
+                break;
+            }
+        }
+        assert!(found_response_tag, "Compare response tag not found");
     }
 }
