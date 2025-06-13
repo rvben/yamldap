@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.7] - 2025-06-13
+
+### Fixed
+- Simplified Docker image publishing in GitHub workflow to resolve persistent 403 errors
+- Removed problematic docker/build-push-action in favor of direct docker commands
+- Fixed multi-arch image creation by building and pushing platform-specific images first
+
+### Changed
+- Refactored GitHub workflow to use simple docker build/push with manifest creation
+- Cleaned up Makefile by removing obsolete Docker targets
+- Updated docker-push-multiarch target to better support local testing with .env file
+
+### Added
+- Created .env.example file documenting GitHub PAT token configuration
+- Added docker-inspect-multiarch target for verifying multi-architecture images
+
 ## [0.0.6] - 2025-06-13
 
 ### Fixed
