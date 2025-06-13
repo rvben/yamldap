@@ -97,6 +97,7 @@ pub enum LdapResultCode {
     NoSuchObject = 32,
     AliasProblem = 33,
     InvalidDNSyntax = 34,
+    InvalidCredentials = 49,
     InsufficientAccessRights = 50,
     Busy = 51,
     Unavailable = 52,
@@ -204,6 +205,7 @@ mod tests {
         assert_eq!(LdapResultCode::NoSuchAttribute as u8, 16);
         assert_eq!(LdapResultCode::NoSuchObject as u8, 32);
         assert_eq!(LdapResultCode::InvalidDNSyntax as u8, 34);
+        assert_eq!(LdapResultCode::InvalidCredentials as u8, 49);
         assert_eq!(LdapResultCode::InsufficientAccessRights as u8, 50);
         assert_eq!(LdapResultCode::Other as u8, 80);
     }
