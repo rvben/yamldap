@@ -200,6 +200,13 @@ jobs:
           echo "Testing docker login..."
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           echo "Login successful!"
+          
+          # Try to create/initialize the package by pushing a simple test image first
+          echo "Initializing package if needed..."
+          echo "FROM scratch" > Dockerfile.init
+          docker build -f Dockerfile.init -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:init .
+          docker push ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:init || echo "Package might already exist"
+          rm Dockerfile.init
 
       - name: Prepare binaries for multi-arch build
         run: |
@@ -222,30 +229,25 @@ jobs:
           ENTRYPOINT ["/yamldap"]
           EOF
 
-      - name: Build and push images
+      - name: Build and push multi-arch image
         if: ${{ inputs.dry_run != true }}
-        run: |
-          # Build for each platform separately using buildx
-          docker buildx build \
-            --platform linux/amd64 \
-            --build-arg TARGETARCH=amd64 \
-            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64 \
-            --push \
-            docker-context
-          
-          docker buildx build \
-            --platform linux/arm64 \
-            --build-arg TARGETARCH=arm64 \
-            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64 \
-            --push \
-            docker-context
-          
-          # Create and push multi-arch manifests
-          docker buildx imagetools create \
-            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }} \
-            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:latest \
-            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64
+        uses: docker/build-push-action@v5
+        with:
+          context: docker-context
+          file: docker-context/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}
+            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:latest
+          # Add labels to link the package to the repository
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Minimal LDAP server that uses YAML files as a data store
+            org.opencontainers.image.licenses=MIT
+          # Disable all extra features that might cause issues
+          provenance: false
+          sbom: false
 
       - name: Test Docker build (dry run)
         if: ${{ inputs.dry_run == true }}

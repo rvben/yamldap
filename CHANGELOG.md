@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.6] - 2025-06-13
+
+### Fixed
+- Fixed GitHub Container Registry push errors by adding proper image labels
+- Added package initialization step to ensure registry package exists
+- Resolved 403 errors by linking Docker images to the repository with org.opencontainers.image.source label
+
+### Changed
+- Simplified Docker push approach back to using docker/build-push-action
+- Disabled SBOM generation in addition to provenance
+- Added comprehensive image labels for proper registry integration
+
+### Added
+- Instructions for using Personal Access Tokens for local Docker registry testing
+
 ## [0.0.5] - 2025-06-13
 
 ### Fixed
