@@ -1,3 +1,7 @@
+# Multi-stage Dockerfile for yamldap
+# This builds the binary from source - used for local development
+# Note: For releases, we use Dockerfile.release with pre-built binaries for faster CI/CD
+
 # Build stage
 FROM rust:1.87 as builder
 

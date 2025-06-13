@@ -157,12 +157,15 @@ jobs:
 
   publish-docker:
     name: Publish Docker Images
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Download Linux binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -185,29 +188,62 @@ jobs:
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Build and push Docker images
+      - name: Prepare binaries for multi-arch build
+        run: |
+          # Create build context directory
+          mkdir -p docker-context
+          
+          # Copy binaries with architecture-specific names
+          cp artifacts/yamldap-linux-amd64/yamldap docker-context/yamldap-amd64
+          cp artifacts/yamldap-linux-arm64/yamldap docker-context/yamldap-arm64
+          
+          # Make binaries executable
+          chmod +x docker-context/yamldap-*
+          
+          # Create multi-arch Dockerfile
+          cat > docker-context/Dockerfile << 'EOF'
+          FROM scratch
+          ARG TARGETARCH
+          COPY yamldap-${TARGETARCH} /yamldap
+          EXPOSE 3389
+          ENTRYPOINT ["/yamldap"]
+          EOF
+
+      - name: Build and push multi-arch image
         if: ${{ inputs.dry_run != true }}
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: docker-context
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ghcr.io/rvben/yamldap:${{ steps.version.outputs.version }}
             ghcr.io/rvben/yamldap:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Test Docker build (dry run)
         if: ${{ inputs.dry_run == true }}
         run: |
-          echo "DRY RUN: Would build and push Docker images"
-          echo "- Platforms: linux/amd64,linux/arm64"
-          echo "- Tags:"
+          echo "DRY RUN: Would build and push multi-arch Docker image using pre-built binaries"
+          echo "- Using artifacts:"
+          ls -la artifacts/
+          echo ""
+          echo "- Would create multi-arch image with tags:"
           echo "  - ghcr.io/rvben/yamldap:${{ steps.version.outputs.version }}"
           echo "  - ghcr.io/rvben/yamldap:latest"
-          # Test build for current platform only
-          docker build -t yamldap:test .
+          echo "- Platforms: linux/amd64, linux/arm64"
+          
+          # Test build for current platform
+          mkdir -p test-context
+          if [ -f "artifacts/yamldap-linux-amd64/yamldap" ]; then
+            cp artifacts/yamldap-linux-amd64/yamldap test-context/yamldap-amd64
+          fi
+          cat > test-context/Dockerfile << 'EOF'
+          FROM scratch
+          COPY yamldap-amd64 /yamldap
+          EXPOSE 3389
+          ENTRYPOINT ["/yamldap"]
+          EOF
+          docker build -t yamldap:test test-context/
 
   summary:
     name: Release Summary

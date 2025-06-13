@@ -1,0 +1,22 @@
+# Ignore unnecessary files in Docker build context
+target/
+*.log
+.git/
+.github/
+.gitignore
+*.md
+!README.md
+.DS_Store
+*.swp
+*.swo
+coverage/
+perf.data*
+flamegraph.svg
+scripts/
+tests/
+benches/
+examples/
+*.sh
+*.py
+compose.yml
+.dockerignore
