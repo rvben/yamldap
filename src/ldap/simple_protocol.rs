@@ -17,6 +17,8 @@ const LDAP_SEARCH_RESULT_DONE: u8 = 0x65;
 const LDAP_COMPARE_REQUEST: u8 = 0x6e;
 const LDAP_COMPARE_RESPONSE: u8 = 0x6f;
 const LDAP_ABANDON_REQUEST: u8 = 0x50;
+const LDAP_EXTENDED_REQUEST: u8 = 0x77;
+const LDAP_EXTENDED_RESPONSE: u8 = 0x78;
 
 pub struct SimpleLdapCodec;
 
@@ -522,6 +524,42 @@ impl Decoder for SimpleLdapCodec {
                 }
             }
 
+            LDAP_EXTENDED_REQUEST => {
+                // Extended request contains:
+                // requestName [0] LDAPOID
+                // requestValue [1] OCTET STRING OPTIONAL
+                let _length = Self::read_length(&mut cursor)?;
+
+                // Read requestName [0] IMPLICIT OCTET STRING (OID)
+                if cursor.remaining() < 1 || cursor.get_u8() != 0x80 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Expected context-specific [0] for requestName",
+                    ));
+                }
+                let name_len = Self::read_length(&mut cursor)?;
+                let mut name_bytes = vec![0u8; name_len];
+                cursor.copy_to_slice(&mut name_bytes);
+                let name = String::from_utf8(name_bytes).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in OID")
+                })?;
+
+                // Read optional requestValue [1] OCTET STRING
+                let value = if cursor.remaining() > 0
+                    && cursor.get_ref()[cursor.position() as usize] == 0x81
+                {
+                    cursor.get_u8(); // Consume tag
+                    let value_len = Self::read_length(&mut cursor)?;
+                    let mut value_bytes = vec![0u8; value_len];
+                    cursor.copy_to_slice(&mut value_bytes);
+                    Some(value_bytes)
+                } else {
+                    None
+                };
+
+                LdapProtocolOp::ExtendedRequest { name, value }
+            }
+
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -650,6 +688,42 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
 
                 // Wrap compare response
                 content.put_u8(LDAP_COMPARE_RESPONSE);
+                Self::write_length(&mut content, response_content.len());
+                content.put(response_content);
+            }
+
+            LdapProtocolOp::ExtendedResponse {
+                ref result,
+                ref name,
+                ref value,
+            } => {
+                let mut response_content = BytesMut::new();
+
+                // Write result code
+                Self::write_integer(&mut response_content, result.result_code as u32);
+
+                // Write matched DN
+                Self::write_string(&mut response_content, &result.matched_dn);
+
+                // Write diagnostic message
+                Self::write_string(&mut response_content, &result.diagnostic_message);
+
+                // Write optional responseName [10] LDAPOID
+                if let Some(oid) = name {
+                    response_content.put_u8(0x8A); // Context-specific [10]
+                    Self::write_length(&mut response_content, oid.len());
+                    response_content.put_slice(oid.as_bytes());
+                }
+
+                // Write optional responseValue [11] OCTET STRING
+                if let Some(val) = value {
+                    response_content.put_u8(0x8B); // Context-specific [11]
+                    Self::write_length(&mut response_content, val.len());
+                    response_content.put_slice(val);
+                }
+
+                // Wrap extended response
+                content.put_u8(LDAP_EXTENDED_RESPONSE);
                 Self::write_length(&mut content, response_content.len());
                 content.put(response_content);
             }
@@ -1089,6 +1163,81 @@ mod tests {
             }
             _ => panic!("Expected AbandonRequest"),
         }
+    }
+
+    #[test]
+    fn test_decode_extended_request() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::new();
+
+        // Create extended request for StartTLS
+        // Message: SEQUENCE { messageID INTEGER, ExtendedRequest [APPLICATION 23] { requestName, requestValue } }
+        let mut message_content = BytesMut::new();
+
+        // Message ID
+        message_content.put_u8(0x02); // INTEGER
+        message_content.put_u8(0x01); // length 1
+        message_content.put_u8(0x01); // value 1
+
+        // ExtendedRequest [APPLICATION 23]
+        let mut extended_content = BytesMut::new();
+
+        // requestName [0] IMPLICIT OCTET STRING - StartTLS OID
+        let oid = "1.3.6.1.4.1.1466.20037";
+        extended_content.put_u8(0x80); // Context-specific [0]
+        extended_content.put_u8(oid.len() as u8);
+        extended_content.put_slice(oid.as_bytes());
+
+        // No requestValue for StartTLS
+
+        message_content.put_u8(0x77); // Extended request tag
+        message_content.put_u8(extended_content.len() as u8);
+        message_content.put(extended_content);
+
+        // Wrap in SEQUENCE
+        buf.put_u8(0x30); // SEQUENCE
+        buf.put_u8(message_content.len() as u8);
+        buf.put(message_content);
+
+        let result = codec.decode(&mut buf);
+        assert!(result.is_ok());
+        let msg = result.unwrap().unwrap();
+        assert_eq!(msg.message_id, 1);
+
+        match msg.protocol_op {
+            LdapProtocolOp::ExtendedRequest { name, value } => {
+                assert_eq!(name, "1.3.6.1.4.1.1466.20037");
+                assert!(value.is_none());
+            }
+            _ => panic!("Expected ExtendedRequest"),
+        }
+    }
+
+    #[test]
+    fn test_encode_extended_response() {
+        let mut codec = SimpleLdapCodec;
+
+        // Test Extended response for StartTLS
+        let msg = LdapMessage {
+            message_id: 1,
+            protocol_op: LdapProtocolOp::ExtendedResponse {
+                result: LdapResult {
+                    result_code: LdapResultCode::Unavailable,
+                    matched_dn: String::new(),
+                    diagnostic_message: "StartTLS is not supported".to_string(),
+                },
+                name: Some("1.3.6.1.4.1.1466.20037".to_string()),
+                value: None,
+            },
+        };
+
+        let mut buf = BytesMut::new();
+        let result = codec.encode(msg, &mut buf);
+        assert!(result.is_ok());
+        assert!(!buf.is_empty());
+
+        // Verify the encoded message starts with SEQUENCE tag
+        assert_eq!(buf[0], 0x30);
     }
 
     #[test]

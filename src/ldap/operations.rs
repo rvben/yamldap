@@ -26,6 +26,10 @@ pub enum LdapOperation {
     Abandon {
         message_id: LdapMessageId,
     },
+    Extended {
+        name: String,
+        value: Option<Vec<u8>>,
+    },
 }
 
 pub fn handle_operation(
@@ -182,6 +186,37 @@ pub fn handle_operation(
             tracing::debug!("Received abandon request for message ID: {}", abandon_id);
             // Return empty vector - no response is sent for abandon
             vec![]
+        }
+
+        LdapOperation::Extended { name, value: _ } => {
+            // Handle Extended operations
+            tracing::debug!("Received extended request with OID: {}", name);
+
+            // StartTLS OID: 1.3.6.1.4.1.1466.20037
+            const START_TLS_OID: &str = "1.3.6.1.4.1.1466.20037";
+
+            let result = if name == START_TLS_OID {
+                // For now, we don't support StartTLS - return unavailable
+                LdapResult::error(
+                    LdapResultCode::Unavailable,
+                    "StartTLS is not supported in this implementation".to_string(),
+                )
+            } else {
+                // Unknown extended operation
+                LdapResult::error(
+                    LdapResultCode::UnwillingToPerform,
+                    format!("Unsupported extended operation: {}", name),
+                )
+            };
+
+            vec![LdapMessage {
+                message_id,
+                protocol_op: LdapProtocolOp::ExtendedResponse {
+                    result,
+                    name: Some(name),
+                    value: None,
+                },
+            }]
         }
     }
 }
@@ -811,5 +846,77 @@ mod tests {
             0,
             "Abandon operation should return no response"
         );
+    }
+
+    #[test]
+    fn test_extended_operation_start_tls() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        // Test StartTLS extended operation
+        let operation = LdapOperation::Extended {
+            name: "1.3.6.1.4.1.1466.20037".to_string(),
+            value: None,
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+
+        assert_eq!(
+            responses.len(),
+            1,
+            "Extended operation should return one response"
+        );
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::ExtendedResponse {
+                result,
+                name,
+                value,
+            } => {
+                assert_eq!(result.result_code, LdapResultCode::Unavailable);
+                assert!(result
+                    .diagnostic_message
+                    .contains("StartTLS is not supported"));
+                assert_eq!(name.as_ref().unwrap(), "1.3.6.1.4.1.1466.20037");
+                assert!(value.is_none());
+            }
+            _ => panic!("Expected ExtendedResponse"),
+        }
+    }
+
+    #[test]
+    fn test_extended_operation_unknown() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        // Test unknown extended operation
+        let operation = LdapOperation::Extended {
+            name: "1.2.3.4.5".to_string(),
+            value: Some(vec![0x01, 0x02, 0x03]),
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+
+        assert_eq!(
+            responses.len(),
+            1,
+            "Extended operation should return one response"
+        );
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::ExtendedResponse {
+                result,
+                name,
+                value,
+            } => {
+                assert_eq!(result.result_code, LdapResultCode::UnwillingToPerform);
+                assert!(result
+                    .diagnostic_message
+                    .contains("Unsupported extended operation"));
+                assert_eq!(name.as_ref().unwrap(), "1.2.3.4.5");
+                assert!(value.is_none());
+            }
+            _ => panic!("Expected ExtendedResponse"),
+        }
     }
 }

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.9] - 2025-06-13
+
+### Fixed
+- Added support for LDAP Abandon Request operation (tag 0x50) to prevent connection drops with django-auth-ldap
+
+### Added
+- Implemented LDAP Abandon Request handling (RFC 4511 Section 4.11)
+- Implemented LDAP Extended Request/Response operations (tags 0x77/0x78) for future extensibility
+- Added proper response for StartTLS Extended operation (returns unavailable)
+- Added comprehensive tests for Abandon and Extended operation functionality
+
 ## [0.0.8] - 2025-06-13
 
 ### Fixed

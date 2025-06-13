@@ -19,7 +19,7 @@ A lightweight LDAP server that serves directory data from YAML files, designed f
 
 - 🚀 **Quick Setup** - Define your LDAP directory in a simple YAML file
 - 🔐 **Authentication** - Support for multiple password formats (plain, SHA, SSHA, bcrypt)
-- 🔍 **LDAP Operations** - Bind, search, and compare operations
+- 🔍 **LDAP Operations** - Bind, search, compare, abandon, and extended operations
 - 🛠️ **Development Friendly** - Perfect for testing LDAP integrations locally
 - 🐳 **Docker Support** - Run in containers with provided Dockerfile
 - ⚡ **Lightweight** - Minimal resource usage, fast startup
@@ -192,6 +192,31 @@ import ldap
 conn = ldap.initialize("ldap://localhost:389")
 conn.simple_bind_s("uid=john,ou=users,dc=example,dc=com", "password")
 results = conn.search_s("dc=example,dc=com", ldap.SCOPE_SUBTREE, "(uid=john)")
+```
+
+### Django with django-auth-ldap
+```python
+# settings.py
+import ldap
+from django_auth_ldap.config import LDAPSearch, GroupOfNamesType
+
+AUTH_LDAP_SERVER_URI = "ldap://yamldap:389"
+AUTH_LDAP_BIND_DN = "cn=admin,dc=example,dc=com"
+AUTH_LDAP_BIND_PASSWORD = "admin"
+
+AUTH_LDAP_USER_SEARCH = LDAPSearch(
+    "dc=example,dc=com",
+    ldap.SCOPE_SUBTREE,
+    "(uid=%(user)s)",
+)
+
+AUTH_LDAP_GROUP_SEARCH = LDAPSearch(
+    "ou=groups,dc=example,dc=com",
+    ldap.SCOPE_SUBTREE,
+    "(objectClass=groupOfNames)",
+)
+
+AUTH_LDAP_GROUP_TYPE = GroupOfNamesType()
 ```
 
 ### Node.js

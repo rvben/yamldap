@@ -121,6 +121,10 @@ fn protocol_to_operation(msg: &LdapMessage) -> Option<LdapOperation> {
         LdapProtocolOp::AbandonRequest { message_id } => Some(LdapOperation::Abandon {
             message_id: *message_id,
         }),
+        LdapProtocolOp::ExtendedRequest { name, value } => Some(LdapOperation::Extended {
+            name: name.clone(),
+            value: value.clone(),
+        }),
         _ => None,
     }
 }
@@ -266,6 +270,26 @@ mod tests {
                 assert_eq!(message_id, 10);
             }
             _ => panic!("Expected Abandon operation"),
+        }
+    }
+
+    #[test]
+    fn test_protocol_to_operation_extended() {
+        let msg = LdapMessage {
+            message_id: 5,
+            protocol_op: LdapProtocolOp::ExtendedRequest {
+                name: "1.3.6.1.4.1.1466.20037".to_string(),
+                value: None,
+            },
+        };
+
+        let operation = protocol_to_operation(&msg).unwrap();
+        match operation {
+            LdapOperation::Extended { name, value } => {
+                assert_eq!(name, "1.3.6.1.4.1.1466.20037");
+                assert!(value.is_none());
+            }
+            _ => panic!("Expected Extended operation"),
         }
     }
 
