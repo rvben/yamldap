@@ -143,12 +143,10 @@ release-patch:
 	git commit -m "chore: bump version to $$NEW_VERSION"; \
 	# Create and push tag
 	git tag -a "v$$NEW_VERSION" -m "Release v$$NEW_VERSION"; \
+	git push origin main; \
+	git push origin "v$$NEW_VERSION"; \
 	echo ""; \
-	echo "Release v$$NEW_VERSION created successfully!"; \
-	echo ""; \
-	echo "To push the release:"; \
-	echo "  git push origin main"; \
-	echo "  git push origin v$$NEW_VERSION"; \
+	echo "Release v$$NEW_VERSION created and pushed successfully!"; \
 	echo ""; \
 	echo "To publish to crates.io:"; \
 	echo "  cargo publish"; \
