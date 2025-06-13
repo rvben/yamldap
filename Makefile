@@ -120,6 +120,43 @@ test-ldap:
 	@echo "Testing LDAP server..."
 	@./test_ldap.py || true
 
+# Create a new patch release
+release-patch:
+	@echo "Creating a new patch release..."
+	@# Get current version from Cargo.toml
+	@CURRENT_VERSION=$$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2); \
+	echo "Current version: $$CURRENT_VERSION"; \
+	# Split version into parts
+	MAJOR=$$(echo $$CURRENT_VERSION | cut -d. -f1); \
+	MINOR=$$(echo $$CURRENT_VERSION | cut -d. -f2); \
+	PATCH=$$(echo $$CURRENT_VERSION | cut -d. -f3); \
+	# Increment patch version
+	NEW_PATCH=$$((PATCH + 1)); \
+	NEW_VERSION="$$MAJOR.$$MINOR.$$NEW_PATCH"; \
+	echo "New version: $$NEW_VERSION"; \
+	# Update Cargo.toml
+	sed -i.bak "s/^version = \"$$CURRENT_VERSION\"/version = \"$$NEW_VERSION\"/" Cargo.toml && rm Cargo.toml.bak; \
+	# Update Cargo.lock
+	cargo update -p yamldap; \
+	# Commit changes
+	git add Cargo.toml Cargo.lock; \
+	git commit -m "chore: bump version to $$NEW_VERSION"; \
+	# Create and push tag
+	git tag -a "v$$NEW_VERSION" -m "Release v$$NEW_VERSION"; \
+	echo ""; \
+	echo "Release v$$NEW_VERSION created successfully!"; \
+	echo ""; \
+	echo "To push the release:"; \
+	echo "  git push origin main"; \
+	echo "  git push origin v$$NEW_VERSION"; \
+	echo ""; \
+	echo "To publish to crates.io:"; \
+	echo "  cargo publish"; \
+	echo ""; \
+	echo "To build and push Docker images:"; \
+	echo "  make docker-push VERSION=$$NEW_VERSION"; \
+	echo "  make docker-push-multiplatform VERSION=$$NEW_VERSION"
+
 # Help target
 help:
 	@echo "Available targets:"
@@ -148,4 +185,5 @@ help:
 	@echo "  make fmt-check      - Check code formatting"
 	@echo "  make check          - Type check the code"
 	@echo "  make ci             - Run all checks (format, lint, type check, test)"
+	@echo "  make release-patch  - Create a new patch release (increments version)"
 	@echo "  make help           - Show this help message"
