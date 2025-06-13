@@ -54,7 +54,7 @@ mod tests {
     fn create_test_directory() -> Directory {
         let schema = crate::yaml::YamlSchema::default();
         let directory = Directory::new("dc=example,dc=com".to_string(), schema);
-        
+
         // Add a test user
         let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
         entry.add_attribute(
@@ -63,7 +63,7 @@ mod tests {
             AttributeSyntax::String,
         );
         directory.add_entry(entry);
-        
+
         directory
     }
 
@@ -71,7 +71,7 @@ mod tests {
     fn test_handle_bind_anonymous_allowed() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(true);
-        
+
         let response = handle_bind_request(
             1,
             String::new(),
@@ -79,7 +79,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
@@ -93,7 +93,7 @@ mod tests {
     fn test_handle_bind_anonymous_not_allowed() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let response = handle_bind_request(
             1,
             String::new(),
@@ -101,7 +101,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::StrongerAuthRequired);
@@ -115,7 +115,7 @@ mod tests {
     fn test_handle_bind_simple_success() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let response = handle_bind_request(
             1,
             "cn=test,dc=example,dc=com".to_string(),
@@ -123,7 +123,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
@@ -137,7 +137,7 @@ mod tests {
     fn test_handle_bind_simple_wrong_password() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let response = handle_bind_request(
             1,
             "cn=test,dc=example,dc=com".to_string(),
@@ -145,7 +145,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
@@ -159,7 +159,7 @@ mod tests {
     fn test_handle_bind_simple_nonexistent_user() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let response = handle_bind_request(
             1,
             "cn=nonexistent,dc=example,dc=com".to_string(),
@@ -167,7 +167,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
@@ -181,7 +181,7 @@ mod tests {
     fn test_handle_bind_empty_dn_with_password() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let response = handle_bind_request(
             1,
             String::new(),
@@ -189,7 +189,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
@@ -203,7 +203,7 @@ mod tests {
     fn test_handle_bind_message_id_preserved() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(true);
-        
+
         let message_id = 42;
         let response = handle_bind_request(
             message_id,
@@ -212,7 +212,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         assert_eq!(response.message_id, message_id);
     }
 
@@ -220,18 +220,20 @@ mod tests {
     fn test_handle_bind_with_hashed_password() {
         let schema = crate::yaml::YamlSchema::default();
         let directory = Directory::new("dc=example,dc=com".to_string(), schema);
-        
+
         // Add a test user with hashed password
         let mut entry = LdapEntry::new("cn=hashed,dc=example,dc=com".to_string());
         entry.add_attribute(
             "userPassword".to_string(),
-            vec![AttributeValue::String("{SSHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=".to_string())],
+            vec![AttributeValue::String(
+                "{SSHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=".to_string(),
+            )],
             AttributeSyntax::String,
         );
         directory.add_entry(entry);
-        
+
         let auth_handler = AuthHandler::new(false);
-        
+
         let response = handle_bind_request(
             1,
             "cn=hashed,dc=example,dc=com".to_string(),
@@ -239,7 +241,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
@@ -253,7 +255,7 @@ mod tests {
     fn test_handle_bind_anonymous_with_empty_password() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(true);
-        
+
         // Empty password is treated as anonymous bind
         let response = handle_bind_request(
             1,
@@ -262,7 +264,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
@@ -276,7 +278,7 @@ mod tests {
     fn test_handle_bind_dn_case_insensitive() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         // Test with uppercase DN components
         let response = handle_bind_request(
             1,
@@ -285,7 +287,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
@@ -293,7 +295,7 @@ mod tests {
             }
             _ => panic!("Expected BindResponse"),
         }
-        
+
         // Test with mixed case
         let response = handle_bind_request(
             1,
@@ -302,7 +304,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
@@ -316,7 +318,7 @@ mod tests {
     fn test_handle_bind_returns_error_49_for_invalid_credentials() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         // Test with correct DN but wrong password
         let response = handle_bind_request(
             1,
@@ -325,7 +327,7 @@ mod tests {
             &directory,
             &auth_handler,
         );
-        
+
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
@@ -340,15 +342,15 @@ mod tests {
     fn test_handle_bind_various_dn_formats() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         // Test cases from the bug report
         let test_cases = vec![
-            "cn=test,dc=example,dc=com",     // lowercase
-            "CN=test,DC=example,DC=com",     // uppercase
-            "Cn=Test,Dc=Example,dc=com",     // mixed case
-            "CN=TEST,DC=EXAMPLE,DC=COM",     // all uppercase
+            "cn=test,dc=example,dc=com", // lowercase
+            "CN=test,DC=example,DC=com", // uppercase
+            "Cn=Test,Dc=Example,dc=com", // mixed case
+            "CN=TEST,DC=EXAMPLE,DC=COM", // all uppercase
         ];
-        
+
         for dn in test_cases {
             let response = handle_bind_request(
                 1,
@@ -357,11 +359,15 @@ mod tests {
                 &directory,
                 &auth_handler,
             );
-            
+
             match response.protocol_op {
                 LdapProtocolOp::BindResponse { result } => {
-                    assert_eq!(result.result_code, LdapResultCode::Success, 
-                        "Failed to authenticate with DN: {}", dn);
+                    assert_eq!(
+                        result.result_code,
+                        LdapResultCode::Success,
+                        "Failed to authenticate with DN: {}",
+                        dn
+                    );
                 }
                 _ => panic!("Expected BindResponse for DN: {}", dn),
             }
@@ -372,14 +378,14 @@ mod tests {
     fn test_handle_bind_dn_with_spaces() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         // DNs with spaces around equals and commas (should be normalized)
         let test_cases = vec![
             "cn=test, dc=example, dc=com",
             "CN = test , DC = example , DC = com",
             "cn =test,dc= example,dc = com",
         ];
-        
+
         for dn in test_cases {
             let response = handle_bind_request(
                 1,
@@ -388,15 +394,19 @@ mod tests {
                 &directory,
                 &auth_handler,
             );
-            
+
             // Note: Current implementation may not handle spaces correctly
             // This test documents the expected behavior
             match response.protocol_op {
                 LdapProtocolOp::BindResponse { result } => {
                     // If spaces aren't handled, we expect InvalidCredentials, not InvalidDNSyntax
                     if result.result_code != LdapResultCode::Success {
-                        assert_eq!(result.result_code, LdapResultCode::InvalidCredentials,
-                            "Should return InvalidCredentials (49), not InvalidDNSyntax for DN: {}", dn);
+                        assert_eq!(
+                            result.result_code,
+                            LdapResultCode::InvalidCredentials,
+                            "Should return InvalidCredentials (49), not InvalidDNSyntax for DN: {}",
+                            dn
+                        );
                     }
                 }
                 _ => panic!("Expected BindResponse for DN: {}", dn),

@@ -44,9 +44,12 @@ mod tests {
     fn test_session_bind_with_dn() {
         let mut session = LdapSession::new();
         session.bind("cn=admin,dc=example,dc=com".to_string());
-        
+
         assert!(session.is_authenticated);
-        assert_eq!(session.bound_dn, Some("cn=admin,dc=example,dc=com".to_string()));
+        assert_eq!(
+            session.bound_dn,
+            Some("cn=admin,dc=example,dc=com".to_string())
+        );
         assert!(!session.anonymous);
         assert!(session.is_bound());
     }
@@ -55,7 +58,7 @@ mod tests {
     fn test_session_bind_anonymous() {
         let mut session = LdapSession::new();
         session.bind("".to_string());
-        
+
         assert!(session.is_authenticated);
         assert!(session.bound_dn.is_none());
         assert!(session.anonymous);
@@ -66,13 +69,13 @@ mod tests {
     fn test_session_unbind() {
         let mut session = LdapSession::new();
         session.bind("cn=admin,dc=example,dc=com".to_string());
-        
+
         // Verify bound state
         assert!(session.is_bound());
-        
+
         // Unbind
         session.unbind();
-        
+
         assert!(!session.is_authenticated);
         assert!(session.bound_dn.is_none());
         assert!(!session.anonymous);
@@ -82,14 +85,20 @@ mod tests {
     #[test]
     fn test_session_rebind() {
         let mut session = LdapSession::new();
-        
+
         // First bind
         session.bind("cn=user1,dc=example,dc=com".to_string());
-        assert_eq!(session.bound_dn, Some("cn=user1,dc=example,dc=com".to_string()));
-        
+        assert_eq!(
+            session.bound_dn,
+            Some("cn=user1,dc=example,dc=com".to_string())
+        );
+
         // Rebind as different user
         session.bind("cn=user2,dc=example,dc=com".to_string());
-        assert_eq!(session.bound_dn, Some("cn=user2,dc=example,dc=com".to_string()));
+        assert_eq!(
+            session.bound_dn,
+            Some("cn=user2,dc=example,dc=com".to_string())
+        );
         assert!(session.is_authenticated);
         assert!(!session.anonymous);
     }

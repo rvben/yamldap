@@ -53,12 +53,13 @@ pub struct Config {
 impl Config {
     pub fn from_cli_args(args: CliArgs) -> crate::Result<Self> {
         // Handle IPv6 addresses by adding brackets if needed
-        let bind_address = if args.bind_address.contains(':') && !args.bind_address.starts_with('[') {
+        let bind_address = if args.bind_address.contains(':') && !args.bind_address.starts_with('[')
+        {
             format!("[{}]:{}", args.bind_address, args.port)
         } else {
             format!("{}:{}", args.bind_address, args.port)
         };
-        
+
         let bind_address = bind_address
             .parse()
             .map_err(|e| crate::YamlLdapError::Config(format!("Invalid bind address: {}", e)))?;
@@ -104,14 +105,19 @@ mod tests {
     fn test_cli_args_custom_values() {
         let args = CliArgs::parse_from([
             "yamldap",
-            "-f", "test.yaml",
-            "-p", "1389",
-            "--bind-address", "127.0.0.1",
-            "--base-dn", "dc=example,dc=com",
+            "-f",
+            "test.yaml",
+            "-p",
+            "1389",
+            "--bind-address",
+            "127.0.0.1",
+            "--base-dn",
+            "dc=example,dc=com",
             "--allow-anonymous",
             "--hot-reload",
             "-v",
-            "--log-level", "debug",
+            "--log-level",
+            "debug",
         ]);
         assert_eq!(args.file, PathBuf::from("test.yaml"));
         assert_eq!(args.port, 1389);
@@ -138,7 +144,10 @@ mod tests {
 
         let config = Config::from_cli_args(args).unwrap();
         assert_eq!(config.yaml_file, PathBuf::from("test.yaml"));
-        assert_eq!(config.bind_address, SocketAddr::from_str("127.0.0.1:389").unwrap());
+        assert_eq!(
+            config.bind_address,
+            SocketAddr::from_str("127.0.0.1:389").unwrap()
+        );
         assert_eq!(config.base_dn, Some("dc=example,dc=com".to_string()));
         assert!(config.allow_anonymous);
         assert!(config.hot_reload);
@@ -176,7 +185,7 @@ mod tests {
             ("WARN", tracing::Level::WARN),
             ("ERROR", tracing::Level::ERROR),
             ("invalid", tracing::Level::INFO), // default
-            ("", tracing::Level::INFO), // default
+            ("", tracing::Level::INFO),        // default
         ];
 
         for (log_level_str, expected_level) in test_cases {
@@ -210,7 +219,10 @@ mod tests {
         };
 
         let config = Config::from_cli_args(args).unwrap();
-        assert_eq!(config.bind_address, SocketAddr::from_str("[::1]:389").unwrap());
+        assert_eq!(
+            config.bind_address,
+            SocketAddr::from_str("[::1]:389").unwrap()
+        );
     }
 
     #[test]

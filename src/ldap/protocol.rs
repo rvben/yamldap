@@ -220,7 +220,7 @@ mod tests {
 
         let anon = BindAuthentication::Anonymous;
         match anon {
-            BindAuthentication::Anonymous => {},
+            BindAuthentication::Anonymous => {}
             _ => panic!("Expected Anonymous authentication"),
         }
     }
@@ -233,7 +233,7 @@ mod tests {
         };
         assert_eq!(msg.message_id, 42);
         match msg.protocol_op {
-            LdapProtocolOp::UnbindRequest => {},
+            LdapProtocolOp::UnbindRequest => {}
             _ => panic!("Expected UnbindRequest"),
         }
     }
@@ -245,9 +245,13 @@ mod tests {
             dn: "cn=admin,dc=example,dc=com".to_string(),
             authentication: BindAuthentication::Simple("secret".to_string()),
         };
-        
+
         match op {
-            LdapProtocolOp::BindRequest { version, dn, authentication } => {
+            LdapProtocolOp::BindRequest {
+                version,
+                dn,
+                authentication,
+            } => {
                 assert_eq!(version, 3);
                 assert_eq!(dn, "cn=admin,dc=example,dc=com");
                 match authentication {
@@ -271,7 +275,7 @@ mod tests {
             filter: "(objectClass=*)".to_string(),
             attributes: vec!["cn".to_string(), "mail".to_string()],
         };
-        
+
         match op {
             LdapProtocolOp::SearchRequest {
                 base_dn,
@@ -301,12 +305,12 @@ mod tests {
         let mut attrs = HashMap::new();
         attrs.insert("cn".to_string(), vec!["John Doe".to_string()]);
         attrs.insert("mail".to_string(), vec!["john@example.com".to_string()]);
-        
+
         let op = LdapProtocolOp::SearchResultEntry {
             dn: "cn=John Doe,dc=example,dc=com".to_string(),
             attributes: attrs.clone(),
         };
-        
+
         match op {
             LdapProtocolOp::SearchResultEntry { dn, attributes } => {
                 assert_eq!(dn, "cn=John Doe,dc=example,dc=com");
@@ -323,9 +327,13 @@ mod tests {
             attribute: "userPassword".to_string(),
             value: "secret".to_string(),
         };
-        
+
         match op {
-            LdapProtocolOp::CompareRequest { dn, attribute, value } => {
+            LdapProtocolOp::CompareRequest {
+                dn,
+                attribute,
+                value,
+            } => {
                 assert_eq!(dn, "cn=user,dc=example,dc=com");
                 assert_eq!(attribute, "userPassword");
                 assert_eq!(value, "secret");
@@ -338,12 +346,12 @@ mod tests {
     fn test_ldap_codec_encoder() {
         let mut codec = LdapCodec;
         let mut buf = BytesMut::new();
-        
+
         let msg = LdapMessage {
             message_id: 1,
             protocol_op: LdapProtocolOp::UnbindRequest,
         };
-        
+
         // Test that encoding doesn't error
         let result = codec.encode(msg, &mut buf);
         assert!(result.is_ok());
@@ -355,7 +363,7 @@ mod tests {
     fn test_ldap_codec_decoder() {
         let mut codec = LdapCodec;
         let mut buf = BytesMut::new();
-        
+
         // Test that decoding returns None (needs more data)
         let result = codec.decode(&mut buf);
         assert!(result.is_ok());

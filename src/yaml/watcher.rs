@@ -100,9 +100,9 @@ impl YamlWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
+    use notify::event::{CreateKind, ModifyKind};
     use std::io::Write;
-    use notify::{event::{CreateKind, ModifyKind}};
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_is_relevant_event_modify() {
@@ -110,14 +110,14 @@ mod tests {
             _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
             rx: mpsc::channel().1,
         };
-        
+
         let path = Path::new("/tmp/test.yaml");
         let event = Event {
             kind: EventKind::Modify(ModifyKind::Any),
             paths: vec![path.to_path_buf()],
             attrs: Default::default(),
         };
-        
+
         assert!(watcher.is_relevant_event(&event, path));
     }
 
@@ -127,14 +127,14 @@ mod tests {
             _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
             rx: mpsc::channel().1,
         };
-        
+
         let path = Path::new("/tmp/test.yaml");
         let event = Event {
             kind: EventKind::Create(CreateKind::Any),
             paths: vec![path.to_path_buf()],
             attrs: Default::default(),
         };
-        
+
         assert!(watcher.is_relevant_event(&event, path));
     }
 
@@ -144,7 +144,7 @@ mod tests {
             _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
             rx: mpsc::channel().1,
         };
-        
+
         let watched_path = Path::new("/tmp/test.yaml");
         let other_path = Path::new("/tmp/other.yaml");
         let event = Event {
@@ -152,7 +152,7 @@ mod tests {
             paths: vec![other_path.to_path_buf()],
             attrs: Default::default(),
         };
-        
+
         assert!(!watcher.is_relevant_event(&event, watched_path));
     }
 
@@ -162,14 +162,14 @@ mod tests {
             _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
             rx: mpsc::channel().1,
         };
-        
+
         let path = Path::new("/tmp/test.yaml");
         let event = Event {
             kind: EventKind::Access(notify::event::AccessKind::Any),
             paths: vec![path.to_path_buf()],
             attrs: Default::default(),
         };
-        
+
         assert!(!watcher.is_relevant_event(&event, path));
     }
 
@@ -177,12 +177,12 @@ mod tests {
     async fn test_yaml_watcher_new() {
         let temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file.as_file(), "test: data").unwrap();
-        
+
         let result = YamlWatcher::new(temp_file.path());
         assert!(result.is_ok());
-        
+
         let (_watcher, rx) = result.unwrap();
-        
+
         // Initial value should be available
         assert!(rx.has_changed().is_ok());
     }
@@ -194,19 +194,19 @@ mod tests {
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file.as_file(), "test: data").unwrap();
         temp_file.flush().unwrap();
-        
+
         let (_watcher, mut rx) = YamlWatcher::new(temp_file.path()).unwrap();
-        
+
         // Clear initial notification
         let _ = rx.changed().await;
-        
+
         // Modify the file
         writeln!(temp_file.as_file(), "test: modified").unwrap();
         temp_file.flush().unwrap();
-        
+
         // Wait a bit for the file system event
         tokio::time::sleep(Duration::from_millis(100)).await;
-        
+
         // We might or might not receive a change notification depending on the file system
         // Just check that we can still try to receive
         let _ = rx.has_changed();

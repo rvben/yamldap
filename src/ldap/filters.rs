@@ -123,24 +123,23 @@ pub fn parse_ldap_filter(filter_str: &str) -> crate::Result<LdapFilter> {
     let inner = &filter_str[1..filter_str.len() - 1];
 
     // Check for composite filters
-    if inner.starts_with('&') {
+    if let Some(rest) = inner.strip_prefix('&') {
         // AND filter: (&(filter1)(filter2)...)
-        let filters = parse_composite_filters(&inner[1..])?;
+        let filters = parse_composite_filters(rest)?;
         return Ok(LdapFilter::And(filters));
-    } else if inner.starts_with('|') {
+    } else if let Some(rest) = inner.strip_prefix('|') {
         // OR filter: (|(filter1)(filter2)...)
-        let filters = parse_composite_filters(&inner[1..])?;
+        let filters = parse_composite_filters(rest)?;
         return Ok(LdapFilter::Or(filters));
-    } else if inner.starts_with('!') {
+    } else if let Some(rest) = inner.strip_prefix('!') {
         // NOT filter: (!(filter))
-        let filter = parse_ldap_filter(&inner[1..])?;
+        let filter = parse_ldap_filter(rest)?;
         return Ok(LdapFilter::Not(Box::new(filter)));
     }
 
     // Check for presence filter: (attr=*)
-    if inner.ends_with("=*") {
-        let attr = inner[..inner.len() - 2].to_string();
-        return Ok(LdapFilter::Present(attr));
+    if let Some(attr_part) = inner.strip_suffix("=*") {
+        return Ok(LdapFilter::Present(attr_part.to_string()));
     }
 
     // Check for comparison filters
@@ -181,9 +180,10 @@ pub fn parse_ldap_filter(filter_str: &str) -> crate::Result<LdapFilter> {
         return Ok(LdapFilter::LessOrEqual(attr, value));
     }
 
-    Err(crate::YamlLdapError::Protocol(
-        format!("Invalid filter format: {}", filter_str),
-    ))
+    Err(crate::YamlLdapError::Protocol(format!(
+        "Invalid filter format: {}",
+        filter_str
+    )))
 }
 
 // Helper function to parse composite filters
@@ -332,8 +332,8 @@ mod tests {
 
     #[test]
     fn test_filter_evaluation() {
-        use crate::directory::entry::{LdapEntry, AttributeValue, AttributeSyntax};
-        
+        use crate::directory::entry::{AttributeSyntax, AttributeValue, LdapEntry};
+
         let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
         entry.add_attribute(
             "uid".to_string(),

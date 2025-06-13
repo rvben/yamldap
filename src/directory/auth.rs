@@ -120,12 +120,12 @@ mod tests {
     fn test_authenticate_with_plain_password() {
         let handler = AuthHandler::new(false);
         let entry = create_test_entry_with_password("cn=test,dc=example,dc=com", "plainpassword");
-        
+
         // Correct password
         let result = handler.authenticate(Some(&entry), "plainpassword");
         assert!(result.is_ok());
         assert!(result.unwrap());
-        
+
         // Wrong password
         let result = handler.authenticate(Some(&entry), "wrongpassword");
         assert!(result.is_err());
@@ -140,15 +140,15 @@ mod tests {
         let handler = AuthHandler::new(false);
         // SSHA hash for "password" (this is a test hash)
         let entry = create_test_entry_with_password(
-            "cn=test,dc=example,dc=com", 
-            "{SSHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g="
+            "cn=test,dc=example,dc=com",
+            "{SSHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=",
         );
-        
+
         // Correct password
         let result = handler.authenticate(Some(&entry), "password");
         assert!(result.is_ok());
         assert!(result.unwrap());
-        
+
         // Wrong password
         let result = handler.authenticate(Some(&entry), "wrongpassword");
         assert!(result.is_err());
@@ -160,14 +160,14 @@ mod tests {
         // Bcrypt hash for "password"
         let entry = create_test_entry_with_password(
             "cn=test,dc=example,dc=com",
-            "{BCRYPT}$2b$12$GhvMmNVjRW29ulnudl.LbuAnUtN/LRfe1JsBm1Xu6LE3059z5Tr8m"
+            "{BCRYPT}$2b$12$GhvMmNVjRW29ulnudl.LbuAnUtN/LRfe1JsBm1Xu6LE3059z5Tr8m",
         );
-        
+
         // Correct password
         let result = handler.authenticate(Some(&entry), "password");
         assert!(result.is_ok());
         assert!(result.unwrap());
-        
+
         // Wrong password
         let result = handler.authenticate(Some(&entry), "wrongpassword");
         assert!(result.is_err());
@@ -185,17 +185,17 @@ mod tests {
             ],
             AttributeSyntax::String,
         );
-        
+
         // First password
         let result = handler.authenticate(Some(&entry), "password1");
         assert!(result.is_ok());
         assert!(result.unwrap());
-        
+
         // Second password
         let result = handler.authenticate(Some(&entry), "password2");
         assert!(result.is_ok());
         assert!(result.unwrap());
-        
+
         // Wrong password
         let result = handler.authenticate(Some(&entry), "wrongpassword");
         assert!(result.is_err());
@@ -211,7 +211,7 @@ mod tests {
             vec![AttributeValue::String("password".to_string())],
             AttributeSyntax::String,
         );
-        
+
         let result = handler.authenticate(Some(&entry), "password");
         assert!(result.is_ok());
         assert!(result.unwrap());
@@ -226,7 +226,7 @@ mod tests {
             vec![AttributeValue::Integer(12345)], // Non-string value
             AttributeSyntax::Integer,
         );
-        
+
         let result = handler.authenticate(Some(&entry), "12345");
         assert!(result.is_err());
         match result.unwrap_err() {

@@ -181,7 +181,7 @@ mod tests {
     fn create_test_directory() -> Directory {
         let schema = crate::yaml::YamlSchema::default();
         let directory = Directory::new("dc=example,dc=com".to_string(), schema);
-        
+
         // Add test users
         let mut user1 = LdapEntry::new("cn=user1,ou=users,dc=example,dc=com".to_string());
         user1.add_attribute(
@@ -274,15 +274,15 @@ mod tests {
     fn test_handle_bind_operation() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Bind {
             version: 3,
             dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
             auth: BindAuthentication::Simple("password1".to_string()),
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, false);
-        
+
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
             LdapProtocolOp::BindResponse { result } => {
@@ -296,11 +296,11 @@ mod tests {
     fn test_handle_unbind_operation() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Unbind;
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         // Unbind should return no responses
         assert_eq!(responses.len(), 0);
     }
@@ -309,19 +309,19 @@ mod tests {
     fn test_handle_search_operation_base_scope() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Search {
             base_dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
             scope: SearchScope::BaseObject,
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         // Should have 2 responses: 1 entry + done
         assert_eq!(responses.len(), 2);
-        
+
         match &responses[0].protocol_op {
             LdapProtocolOp::SearchResultEntry { dn, attributes } => {
                 assert_eq!(dn, "cn=user1,ou=users,dc=example,dc=com");
@@ -331,7 +331,7 @@ mod tests {
             }
             _ => panic!("Expected SearchResultEntry"),
         }
-        
+
         match &responses[1].protocol_op {
             LdapProtocolOp::SearchResultDone { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
@@ -344,19 +344,19 @@ mod tests {
     fn test_handle_search_operation_single_level() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Search {
             base_dn: "ou=users,dc=example,dc=com".to_string(),
             scope: SearchScope::SingleLevel,
             filter: "(objectClass=person)".to_string(),
             attributes: vec!["cn".to_string(), "uid".to_string()],
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         // Should have 3 responses: 2 entries + done
         assert_eq!(responses.len(), 3);
-        
+
         // Check that we got both users
         let entry_dns: Vec<&str> = responses[0..2]
             .iter()
@@ -365,10 +365,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        
+
         assert!(entry_dns.contains(&"cn=user1,ou=users,dc=example,dc=com"));
         assert!(entry_dns.contains(&"cn=user2,ou=users,dc=example,dc=com"));
-        
+
         // Check that only requested attributes are returned
         match &responses[0].protocol_op {
             LdapProtocolOp::SearchResultEntry { attributes, .. } => {
@@ -384,19 +384,19 @@ mod tests {
     fn test_handle_search_operation_subtree() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
             filter: "(objectClass=*)".to_string(), // Get all entries
             attributes: vec![],
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         // Should have 5 responses: 4 entries (2 users + 1 OU + 1 base) + done
         assert_eq!(responses.len(), 5);
-        
+
         match &responses[4].protocol_op {
             LdapProtocolOp::SearchResultDone { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
@@ -409,16 +409,16 @@ mod tests {
     fn test_handle_search_operation_invalid_filter() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::BaseObject,
             filter: "invalid filter".to_string(), // No parentheses at all
             attributes: vec![],
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
             LdapProtocolOp::SearchResultDone { result } => {
@@ -433,15 +433,15 @@ mod tests {
     fn test_handle_compare_operation_match() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Compare {
             dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
             attribute: "uid".to_string(),
             value: "user1".to_string(),
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
             LdapProtocolOp::CompareResponse { result } => {
@@ -455,15 +455,15 @@ mod tests {
     fn test_handle_compare_operation_no_match() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Compare {
             dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
             attribute: "uid".to_string(),
             value: "user2".to_string(),
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
             LdapProtocolOp::CompareResponse { result } => {
@@ -477,15 +477,15 @@ mod tests {
     fn test_handle_compare_operation_case_insensitive() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Compare {
             dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
             attribute: "mail".to_string(),
             value: "USER1@EXAMPLE.COM".to_string(), // Different case
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
             LdapProtocolOp::CompareResponse { result } => {
@@ -499,20 +499,22 @@ mod tests {
     fn test_handle_compare_operation_no_such_attribute() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Compare {
             dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
             attribute: "nonexistent".to_string(),
             value: "value".to_string(),
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
             LdapProtocolOp::CompareResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::NoSuchAttribute);
-                assert!(result.diagnostic_message.contains("Attribute nonexistent not found"));
+                assert!(result
+                    .diagnostic_message
+                    .contains("Attribute nonexistent not found"));
             }
             _ => panic!("Expected CompareResponse"),
         }
@@ -522,20 +524,22 @@ mod tests {
     fn test_handle_compare_operation_no_such_object() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Compare {
             dn: "cn=nonexistent,dc=example,dc=com".to_string(),
             attribute: "uid".to_string(),
             value: "value".to_string(),
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
             LdapProtocolOp::CompareResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::NoSuchObject);
-                assert!(result.diagnostic_message.contains("Entry cn=nonexistent,dc=example,dc=com not found"));
+                assert!(result
+                    .diagnostic_message
+                    .contains("Entry cn=nonexistent,dc=example,dc=com not found"));
             }
             _ => panic!("Expected CompareResponse"),
         }
@@ -545,7 +549,7 @@ mod tests {
     fn test_message_id_preserved() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let message_id = 42;
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
@@ -553,9 +557,9 @@ mod tests {
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
-        
+
         let responses = handle_operation(message_id, operation, &directory, &auth_handler, true);
-        
+
         // All responses should have the same message ID
         for response in responses {
             assert_eq!(response.message_id, message_id);
@@ -566,19 +570,19 @@ mod tests {
     fn test_search_with_specific_filter() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
             filter: "(uid=user1)".to_string(), // Simple filter since complex ones aren't parsed
             attributes: vec![],
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         // Should find only user1
         assert_eq!(responses.len(), 2); // 1 entry + done
-        
+
         match &responses[0].protocol_op {
             LdapProtocolOp::SearchResultEntry { dn, .. } => {
                 assert_eq!(dn, "cn=user1,ou=users,dc=example,dc=com");
@@ -591,7 +595,7 @@ mod tests {
     fn test_search_returns_only_matching_entries() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         // Test 1: Search for specific uid - should return only that user
         let operation = LdapOperation::Search {
             base_dn: "ou=users,dc=example,dc=com".to_string(),
@@ -599,17 +603,20 @@ mod tests {
             filter: "(uid=user1)".to_string(),
             attributes: vec!["uid".to_string(), "cn".to_string()],
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         // Count actual entries (exclude SearchResultDone)
-        let entry_count = responses.iter().filter(|r| matches!(
-            r.protocol_op, 
-            LdapProtocolOp::SearchResultEntry { .. }
-        )).count();
-        
-        assert_eq!(entry_count, 1, "Should return exactly 1 user with uid=user1");
-        
+        let entry_count = responses
+            .iter()
+            .filter(|r| matches!(r.protocol_op, LdapProtocolOp::SearchResultEntry { .. }))
+            .count();
+
+        assert_eq!(
+            entry_count, 1,
+            "Should return exactly 1 user with uid=user1"
+        );
+
         // Verify it's the right user
         match &responses[0].protocol_op {
             LdapProtocolOp::SearchResultEntry { dn, attributes } => {
@@ -625,7 +632,7 @@ mod tests {
     fn test_search_base_scope_returns_only_base() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         // Search with BASE scope should return only the specified DN
         let operation = LdapOperation::Search {
             base_dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
@@ -633,20 +640,22 @@ mod tests {
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
-        let entry_count = responses.iter().filter(|r| matches!(
-            r.protocol_op, 
-            LdapProtocolOp::SearchResultEntry { .. }
-        )).count();
-        
+
+        let entry_count = responses
+            .iter()
+            .filter(|r| matches!(r.protocol_op, LdapProtocolOp::SearchResultEntry { .. }))
+            .count();
+
         assert_eq!(entry_count, 1, "BASE scope should return exactly 1 entry");
-        
+
         match &responses[0].protocol_op {
             LdapProtocolOp::SearchResultEntry { dn, .. } => {
-                assert_eq!(dn, "cn=user1,ou=users,dc=example,dc=com", 
-                    "BASE scope should return only the base DN");
+                assert_eq!(
+                    dn, "cn=user1,ou=users,dc=example,dc=com",
+                    "BASE scope should return only the base DN"
+                );
             }
             _ => panic!("Expected SearchResultEntry"),
         }
@@ -656,7 +665,7 @@ mod tests {
     fn test_search_returns_empty_for_no_matches() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         // Search for non-existent uid
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
@@ -664,11 +673,11 @@ mod tests {
             filter: "(uid=nonexistent)".to_string(),
             attributes: vec![],
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
+
         assert_eq!(responses.len(), 1, "Should only have SearchResultDone");
-        
+
         match &responses[0].protocol_op {
             LdapProtocolOp::SearchResultDone { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
@@ -681,7 +690,7 @@ mod tests {
     fn test_search_onelevel_scope() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         // Search with ONELEVEL scope from dc=example,dc=com
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
@@ -689,14 +698,17 @@ mod tests {
             filter: "(objectClass=*)".to_string(),
             attributes: vec!["ou".to_string()],
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
-        let entries: Vec<&str> = responses.iter().filter_map(|r| match &r.protocol_op {
-            LdapProtocolOp::SearchResultEntry { dn, .. } => Some(dn.as_str()),
-            _ => None,
-        }).collect();
-        
+
+        let entries: Vec<&str> = responses
+            .iter()
+            .filter_map(|r| match &r.protocol_op {
+                LdapProtocolOp::SearchResultEntry { dn, .. } => Some(dn.as_str()),
+                _ => None,
+            })
+            .collect();
+
         assert_eq!(entries.len(), 1, "ONELEVEL from base should find 1 OU");
         assert_eq!(entries[0], "ou=users,dc=example,dc=com");
     }
@@ -705,7 +717,7 @@ mod tests {
     fn test_search_and_filter() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
-        
+
         // Test AND filter: (&(objectClass=person)(uid=user1))
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
@@ -713,14 +725,17 @@ mod tests {
             filter: "(&(objectClass=person)(uid=user1))".to_string(),
             attributes: vec![],
         };
-        
+
         let responses = handle_operation(1, operation, &directory, &auth_handler, true);
-        
-        let entries: Vec<&str> = responses.iter().filter_map(|r| match &r.protocol_op {
-            LdapProtocolOp::SearchResultEntry { dn, .. } => Some(dn.as_str()),
-            _ => None,
-        }).collect();
-        
+
+        let entries: Vec<&str> = responses
+            .iter()
+            .filter_map(|r| match &r.protocol_op {
+                LdapProtocolOp::SearchResultEntry { dn, .. } => Some(dn.as_str()),
+                _ => None,
+            })
+            .collect();
+
         // Should find only user1 (not user2, and not non-person entries)
         assert_eq!(entries.len(), 1, "AND filter should return exactly 1 match");
         assert_eq!(entries[0], "cn=user1,ou=users,dc=example,dc=com");

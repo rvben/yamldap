@@ -113,9 +113,9 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
-    use std::io::Write;
 
     fn create_test_yaml_file() -> NamedTempFile {
         let mut file = NamedTempFile::new().unwrap();
@@ -197,14 +197,11 @@ mod tests {
         };
 
         let server = Server::new(config).await.unwrap();
-        
+
         // Start server in background
         let handle = tokio::spawn(async move {
             // The server.run() method runs forever, so we just test that it starts
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                server.run()
-            ).await;
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(100), server.run()).await;
         });
 
         // Give it time to start

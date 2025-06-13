@@ -144,7 +144,7 @@ impl SimpleLdapCodec {
 
         let tag = cursor.get_u8();
         let length = Self::read_length(cursor)?;
-        
+
         // LDAP Filter tags:
         // 0xA0 - AND
         // 0xA1 - OR
@@ -156,11 +156,11 @@ impl SimpleLdapCodec {
         // 0x87 - Present (context-specific primitive 7)
         // 0xA8 - Approximate Match
         // 0xA9 - Extensible Match
-        
+
         match tag {
             0xA0 => {
                 // AND filter
-                let __end_pos = cursor.position() + length as u64;
+                let _end_pos = cursor.position() + length as u64;
                 let mut filters = Vec::new();
                 while cursor.position() < _end_pos {
                     filters.push(Self::read_filter(cursor)?);
@@ -169,7 +169,7 @@ impl SimpleLdapCodec {
             }
             0xA1 => {
                 // OR filter
-                let __end_pos = cursor.position() + length as u64;
+                let _end_pos = cursor.position() + length as u64;
                 let mut filters = Vec::new();
                 while cursor.position() < _end_pos {
                     filters.push(Self::read_filter(cursor)?);
@@ -183,25 +183,27 @@ impl SimpleLdapCodec {
             }
             0xA3 => {
                 // Equality Match: (attr=value)
-                let __end_pos = cursor.position() + length as u64;
+                let _end_pos = cursor.position() + length as u64;
                 let attr = Self::read_string(cursor)?;
                 let value = Self::read_string(cursor)?;
                 Ok(format!("({}={})", attr, value))
             }
             0xA4 => {
                 // Substring filter: (attr=*value*)
-                let __end_pos = cursor.position() + length as u64;
+                let _end_pos = cursor.position() + length as u64;
                 let attr = Self::read_string(cursor)?;
-                
+
                 // Read substring components
-                if cursor.position() < _end_pos && cursor.get_ref()[cursor.position() as usize] == 0x30 {
+                if cursor.position() < _end_pos
+                    && cursor.get_ref()[cursor.position() as usize] == 0x30
+                {
                     cursor.get_u8(); // SEQUENCE tag
                     let _seq_len = Self::read_length(cursor)?;
-                    
+
                     let mut parts = Vec::new();
                     let mut has_initial = false;
                     let mut has_final = false;
-                    
+
                     while cursor.position() < _end_pos {
                         let sub_tag = cursor.get_u8();
                         let sub_len = Self::read_length(cursor)?;
@@ -210,23 +212,26 @@ impl SimpleLdapCodec {
                         let value = String::from_utf8(bytes).map_err(|_| {
                             io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
                         })?;
-                        
+
                         match sub_tag {
-                            0x80 => { // initial
+                            0x80 => {
+                                // initial
                                 has_initial = true;
                                 parts.insert(0, value);
                             }
-                            0x81 => { // any
+                            0x81 => {
+                                // any
                                 parts.push(format!("*{}", value));
                             }
-                            0x82 => { // final
+                            0x82 => {
+                                // final
                                 has_final = true;
                                 parts.push(format!("*{}", value));
                             }
                             _ => {}
                         }
                     }
-                    
+
                     let mut filter = format!("({}=", attr);
                     if !has_initial {
                         filter.push('*');
@@ -257,9 +262,8 @@ impl SimpleLdapCodec {
                 // Present: (attr=*)
                 let mut bytes = vec![0u8; length];
                 cursor.copy_to_slice(&mut bytes);
-                let attr = String::from_utf8(bytes).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
-                })?;
+                let attr = String::from_utf8(bytes)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
                 Ok(format!("({}=*)", attr))
             }
             _ => {
@@ -368,10 +372,10 @@ impl Decoder for SimpleLdapCodec {
             LDAP_SEARCH_REQUEST => {
                 // Read search request length
                 let _length = Self::read_length(&mut cursor)?;
-                
+
                 // Read base DN
                 let base_dn = Self::read_string(&mut cursor)?;
-                
+
                 // Read scope (ENUMERATED)
                 if cursor.remaining() < 1 || cursor.get_u8() != 0x0A {
                     return Err(io::Error::new(
@@ -381,10 +385,7 @@ impl Decoder for SimpleLdapCodec {
                 }
                 let scope_len = Self::read_length(&mut cursor)?;
                 if scope_len != 1 || cursor.remaining() < 1 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "Invalid scope",
-                    ));
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid scope"));
                 }
                 let scope_value = cursor.get_u8();
                 let scope = match scope_value {
@@ -393,7 +394,7 @@ impl Decoder for SimpleLdapCodec {
                     2 => SearchScope::WholeSubtree,
                     _ => SearchScope::WholeSubtree, // Default to subtree
                 };
-                
+
                 // Read derefAliases (ENUMERATED)
                 if cursor.remaining() < 1 || cursor.get_u8() != 0x0A {
                     return Err(io::Error::new(
@@ -409,13 +410,13 @@ impl Decoder for SimpleLdapCodec {
                     ));
                 }
                 let _deref_value = cursor.get_u8(); // We'll use NeverDerefAliases for now
-                
+
                 // Read sizeLimit (INTEGER)
                 let size_limit = Self::read_integer(&mut cursor)?;
-                
+
                 // Read timeLimit (INTEGER)
                 let time_limit = Self::read_integer(&mut cursor)?;
-                
+
                 // Read typesOnly (BOOLEAN)
                 if cursor.remaining() < 1 || cursor.get_u8() != 0x01 {
                     return Err(io::Error::new(
@@ -431,24 +432,24 @@ impl Decoder for SimpleLdapCodec {
                     ));
                 }
                 let types_only = cursor.get_u8() != 0x00;
-                
+
                 // Read filter - this is complex, so we'll read it as a blob for now
                 // and convert to string representation
                 let filter = Self::read_filter(&mut cursor)?;
-                
+
                 // Read attributes (SEQUENCE OF OCTET STRING)
                 let mut attributes = Vec::new();
                 if cursor.remaining() > 0 && cursor.get_ref()[cursor.position() as usize] == 0x30 {
                     cursor.get_u8(); // SEQUENCE tag
                     let attrs_len = Self::read_length(&mut cursor)?;
                     let attrs_end = cursor.position() + attrs_len as u64;
-                    
+
                     while cursor.position() < attrs_end {
                         let attr = Self::read_string(&mut cursor)?;
                         attributes.push(attr);
                     }
                 }
-                
+
                 LdapProtocolOp::SearchRequest {
                     base_dn,
                     scope,
@@ -602,7 +603,7 @@ mod tests {
         // Test short form (< 128)
         let mut buf = BytesMut::new();
         SimpleLdapCodec::write_length(&mut buf, 42);
-        
+
         let mut cursor = Cursor::new(buf.as_ref());
         let length = SimpleLdapCodec::read_length(&mut cursor).unwrap();
         assert_eq!(length, 42);
@@ -613,7 +614,7 @@ mod tests {
         // Test long form with 1 byte (128-255)
         let mut buf = BytesMut::new();
         SimpleLdapCodec::write_length(&mut buf, 200);
-        
+
         let mut cursor = Cursor::new(buf.as_ref());
         let length = SimpleLdapCodec::read_length(&mut cursor).unwrap();
         assert_eq!(length, 200);
@@ -624,7 +625,7 @@ mod tests {
         // Test long form with 2 bytes (256-65535)
         let mut buf = BytesMut::new();
         SimpleLdapCodec::write_length(&mut buf, 1000);
-        
+
         let mut cursor = Cursor::new(buf.as_ref());
         let length = SimpleLdapCodec::read_length(&mut cursor).unwrap();
         assert_eq!(length, 1000);
@@ -635,7 +636,7 @@ mod tests {
         // Test long form with 3 bytes (>= 65536)
         let mut buf = BytesMut::new();
         SimpleLdapCodec::write_length(&mut buf, 100000);
-        
+
         let mut cursor = Cursor::new(buf.as_ref());
         let length = SimpleLdapCodec::read_length(&mut cursor).unwrap();
         assert_eq!(length, 100000);
@@ -664,7 +665,7 @@ mod tests {
     fn test_read_write_string() {
         let mut buf = BytesMut::new();
         SimpleLdapCodec::write_string(&mut buf, "hello world");
-        
+
         let mut cursor = Cursor::new(buf.as_ref());
         let string = SimpleLdapCodec::read_string(&mut cursor).unwrap();
         assert_eq!(string, "hello world");
@@ -701,7 +702,7 @@ mod tests {
     fn test_read_write_integer() {
         let mut buf = BytesMut::new();
         SimpleLdapCodec::write_integer(&mut buf, 42);
-        
+
         let mut cursor = Cursor::new(buf.as_ref());
         let value = SimpleLdapCodec::read_integer(&mut cursor).unwrap();
         assert_eq!(value, 42);
@@ -745,7 +746,7 @@ mod tests {
     fn test_encode_bind_request() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
-        
+
         let msg = LdapMessage {
             message_id: 1,
             protocol_op: LdapProtocolOp::BindRequest {
@@ -754,7 +755,7 @@ mod tests {
                 authentication: BindAuthentication::Anonymous,
             },
         };
-        
+
         // BindRequest encoding is not implemented in SimpleLdapCodec
         let result = codec.encode(msg, &mut buf);
         assert!(result.is_err());
@@ -765,14 +766,14 @@ mod tests {
     fn test_encode_bind_response() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
-        
+
         let msg = LdapMessage {
             message_id: 1,
             protocol_op: LdapProtocolOp::BindResponse {
                 result: LdapResult::success(),
             },
         };
-        
+
         let result = codec.encode(msg, &mut buf);
         assert!(result.is_ok());
         assert!(!buf.is_empty());
@@ -782,10 +783,10 @@ mod tests {
     fn test_encode_search_result_entry() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
-        
+
         let mut attrs = HashMap::new();
         attrs.insert("cn".to_string(), vec!["test".to_string()]);
-        
+
         let msg = LdapMessage {
             message_id: 2,
             protocol_op: LdapProtocolOp::SearchResultEntry {
@@ -793,7 +794,7 @@ mod tests {
                 attributes: attrs,
             },
         };
-        
+
         let result = codec.encode(msg, &mut buf);
         assert!(result.is_ok());
         assert!(!buf.is_empty());
@@ -803,17 +804,14 @@ mod tests {
     fn test_encode_search_result_done() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
-        
+
         let msg = LdapMessage {
             message_id: 3,
             protocol_op: LdapProtocolOp::SearchResultDone {
-                result: LdapResult::error(
-                    LdapResultCode::NoSuchObject,
-                    "Not found".to_string(),
-                ),
+                result: LdapResult::error(LdapResultCode::NoSuchObject, "Not found".to_string()),
             },
         };
-        
+
         let result = codec.encode(msg, &mut buf);
         assert!(result.is_ok());
         assert!(!buf.is_empty());
@@ -823,12 +821,12 @@ mod tests {
     fn test_encode_unsupported_operation() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
-        
+
         let msg = LdapMessage {
             message_id: 1,
             protocol_op: LdapProtocolOp::UnbindRequest,
         };
-        
+
         let result = codec.encode(msg, &mut buf);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
@@ -837,7 +835,7 @@ mod tests {
     #[test]
     fn test_roundtrip_bind_response() {
         let mut codec = SimpleLdapCodec;
-        
+
         // Encode
         let original = LdapMessage {
             message_id: 42,
@@ -845,10 +843,10 @@ mod tests {
                 result: LdapResult::success(),
             },
         };
-        
+
         let mut buf = BytesMut::new();
         codec.encode(original.clone(), &mut buf).unwrap();
-        
+
         // This test would require implementing decode for BindResponse
         // For now, just check that encoding succeeded
         assert!(!buf.is_empty());
@@ -863,7 +861,7 @@ mod tests {
         assert_eq!(buf[0], 0x02); // INTEGER tag
         assert_eq!(buf[1], 0x01); // length
         assert_eq!(buf[2], 127);
-        
+
         // Test multi-byte integer
         let mut buf = BytesMut::new();
         SimpleLdapCodec::write_integer(&mut buf, 300);
@@ -886,7 +884,7 @@ mod tests {
     fn test_decode_with_debug_logging() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
-        
+
         // Create a simple bind request
         buf.put_u8(0x30); // SEQUENCE
         buf.put_u8(0x0C); // length 12
@@ -902,7 +900,7 @@ mod tests {
         buf.put_u8(0x00); // length 0 (empty)
         buf.put_u8(0x80); // Simple auth
         buf.put_u8(0x00); // length 0 (anonymous)
-        
+
         let result = codec.decode(&mut buf);
         assert!(result.is_ok());
         let msg = result.unwrap().unwrap();

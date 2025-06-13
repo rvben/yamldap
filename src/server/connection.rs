@@ -119,13 +119,13 @@ mod tests {
     use crate::directory::entry::{AttributeSyntax, AttributeValue, LdapEntry};
     use crate::ldap::protocol::{BindAuthentication, DerefAliases, SearchScope};
     use crate::yaml::YamlSchema;
-    use tokio::net::TcpListener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn create_test_directory() -> Arc<Directory> {
         let schema = YamlSchema::default();
         let directory = Directory::new("dc=test,dc=com".to_string(), schema);
-        
+
         // Add a test user
         let mut entry = LdapEntry::new("cn=admin,dc=test,dc=com".to_string());
         entry.add_attribute(
@@ -139,7 +139,7 @@ mod tests {
             AttributeSyntax::String,
         );
         directory.add_entry(entry);
-        
+
         Arc::new(directory)
     }
 
@@ -153,7 +153,7 @@ mod tests {
                 authentication: BindAuthentication::Simple("password".to_string()),
             },
         };
-        
+
         let operation = protocol_to_operation(&msg).unwrap();
         match operation {
             LdapOperation::Bind { version, dn, auth } => {
@@ -174,10 +174,10 @@ mod tests {
             message_id: 2,
             protocol_op: LdapProtocolOp::UnbindRequest,
         };
-        
+
         let operation = protocol_to_operation(&msg).unwrap();
         match operation {
-            LdapOperation::Unbind => {},
+            LdapOperation::Unbind => {}
             _ => panic!("Expected Unbind operation"),
         }
     }
@@ -197,10 +197,15 @@ mod tests {
                 attributes: vec!["cn".to_string(), "mail".to_string()],
             },
         };
-        
+
         let operation = protocol_to_operation(&msg).unwrap();
         match operation {
-            LdapOperation::Search { base_dn, scope, filter, attributes } => {
+            LdapOperation::Search {
+                base_dn,
+                scope,
+                filter,
+                attributes,
+            } => {
                 assert_eq!(base_dn, "dc=test,dc=com");
                 assert_eq!(scope, SearchScope::WholeSubtree);
                 assert_eq!(filter, "(objectClass=*)");
@@ -218,7 +223,7 @@ mod tests {
                 result: crate::ldap::protocol::LdapResult::success(),
             },
         };
-        
+
         let operation = protocol_to_operation(&msg);
         assert!(operation.is_none());
     }
@@ -228,10 +233,10 @@ mod tests {
         // Start a test server
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        
+
         let directory = create_test_directory();
         let auth_handler = Arc::new(AuthHandler::new(false));
-        
+
         // Handle connections in background
         let dir = directory.clone();
         let auth = auth_handler.clone();
@@ -239,14 +244,17 @@ mod tests {
             let (socket, _) = listener.accept().await.unwrap();
             let _ = handle_connection(socket, dir, auth).await;
         });
-        
+
         // Connect as client
         let mut client = TcpStream::connect(addr).await.unwrap();
-        
+
         // Send an unbind request (simplified)
         // In real implementation, this would be properly encoded
-        client.write_all(b"\x30\x05\x02\x01\x01\x42\x00").await.unwrap();
-        
+        client
+            .write_all(b"\x30\x05\x02\x01\x01\x42\x00")
+            .await
+            .unwrap();
+
         // Connection should close
         let mut buf = [0u8; 10];
         let n = client.read(&mut buf).await.unwrap();
@@ -257,25 +265,22 @@ mod tests {
     async fn test_handle_connection_error() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        
+
         let directory = create_test_directory();
         let auth_handler = Arc::new(AuthHandler::new(false));
-        
+
         let dir = directory.clone();
         let auth = auth_handler.clone();
         let handle = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
             let _ = handle_connection(socket, dir, auth).await;
         });
-        
+
         // Connect and immediately close
         let client = TcpStream::connect(addr).await.unwrap();
         drop(client);
-        
+
         // Connection handler should complete without panic
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            handle
-        ).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), handle).await;
     }
 }
