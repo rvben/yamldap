@@ -49,6 +49,15 @@ pub enum LdapProtocolOp {
     AbandonRequest {
         message_id: LdapMessageId,
     },
+    ExtendedRequest {
+        name: String,           // OID
+        value: Option<Vec<u8>>, // Optional value
+    },
+    ExtendedResponse {
+        result: LdapResult,
+        name: Option<String>,   // OID
+        value: Option<Vec<u8>>, // Optional value
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
