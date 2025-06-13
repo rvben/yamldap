@@ -1,3 +1,4 @@
+---
 directory:
   base_dn: "dc=example,dc=com"
 

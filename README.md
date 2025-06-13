@@ -31,6 +31,12 @@ A lightweight LDAP server that serves directory data from YAML files, designed f
 cargo install yamldap
 ```
 
+### From Binary Releases
+Download pre-built binaries from the [GitHub Releases](https://github.com/rvben/yamldap/releases) page for:
+- Linux (x86_64, aarch64)
+- macOS (x86_64, aarch64)
+- Windows (x86_64)
+
 ### From Source
 ```bash
 git clone https://github.com/rvben/yamldap
@@ -42,8 +48,11 @@ cargo install --path .
 
 Pull from GitHub Container Registry:
 ```bash
-# Pull the latest version
+# Pull the latest version (multi-platform: linux/amd64, linux/arm64)
 docker pull ghcr.io/rvben/yamldap:latest
+
+# Or pull a specific version
+docker pull ghcr.io/rvben/yamldap:0.0.1
 
 # Run with your YAML directory file
 docker run -p 389:389 -v $(pwd)/directory.yaml:/data/directory.yaml ghcr.io/rvben/yamldap:latest -f /data/directory.yaml
@@ -56,6 +65,13 @@ docker run -p 389:389 -v $(pwd)/examples/sample_directory.yaml:/data/directory.y
 ```
 
 ### Using Docker Compose
+
+Using pre-built images from registry:
+```bash
+docker compose -f compose.registry.yml up
+```
+
+Or build and run locally:
 ```bash
 docker compose up
 ```
