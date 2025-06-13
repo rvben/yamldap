@@ -23,6 +23,9 @@ pub enum LdapOperation {
         attribute: String,
         value: String,
     },
+    Abandon {
+        message_id: LdapMessageId,
+    },
 }
 
 pub fn handle_operation(
@@ -169,6 +172,16 @@ pub fn handle_operation(
                 message_id,
                 protocol_op: LdapProtocolOp::CompareResponse { result },
             }]
+        }
+
+        LdapOperation::Abandon {
+            message_id: abandon_id,
+        } => {
+            // According to RFC 4511, there is no response to an abandon operation
+            // Just log it and return empty response
+            tracing::debug!("Received abandon request for message ID: {}", abandon_id);
+            // Return empty vector - no response is sent for abandon
+            vec![]
         }
     }
 }
@@ -592,6 +605,47 @@ mod tests {
     }
 
     #[test]
+    fn test_search_preserves_dn_case() {
+        let schema = crate::yaml::YamlSchema::default();
+        let directory = Directory::new("dc=test,dc=com".to_string(), schema);
+
+        // Add entry with uppercase components
+        let mut entry = LdapEntry::new("cn=User,ou=Engineering,dc=Test,dc=Com".to_string());
+        entry.add_attribute(
+            "objectClass".to_string(),
+            vec![AttributeValue::String("person".to_string())],
+            AttributeSyntax::String,
+        );
+        entry.add_attribute(
+            "cn".to_string(),
+            vec![AttributeValue::String("User".to_string())],
+            AttributeSyntax::String,
+        );
+        directory.add_entry(entry);
+
+        let auth_handler = AuthHandler::new(false);
+        let operation = LdapOperation::Search {
+            base_dn: "dc=test,dc=com".to_string(), // lowercase search
+            scope: SearchScope::WholeSubtree,
+            filter: "(cn=user)".to_string(), // lowercase filter
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false);
+
+        // Should find 2 responses: SearchResultEntry and SearchResultDone
+        assert_eq!(responses.len(), 2);
+
+        // Check that DN case is preserved
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { dn, .. } => {
+                assert_eq!(dn, "cn=User,ou=Engineering,dc=Test,dc=Com"); // Original case preserved
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
     fn test_search_returns_only_matching_entries() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
@@ -739,5 +793,23 @@ mod tests {
         // Should find only user1 (not user2, and not non-person entries)
         assert_eq!(entries.len(), 1, "AND filter should return exactly 1 match");
         assert_eq!(entries[0], "cn=user1,ou=users,dc=example,dc=com");
+    }
+
+    #[test]
+    fn test_abandon_operation() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        // Test abandon operation - it should return no responses
+        let operation = LdapOperation::Abandon { message_id: 5 };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+
+        // Abandon operation should return empty response (no response is sent)
+        assert_eq!(
+            responses.len(),
+            0,
+            "Abandon operation should return no response"
+        );
     }
 }

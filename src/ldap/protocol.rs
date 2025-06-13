@@ -46,6 +46,9 @@ pub enum LdapProtocolOp {
     CompareResponse {
         result: LdapResult,
     },
+    AbandonRequest {
+        message_id: LdapMessageId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

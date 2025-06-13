@@ -118,6 +118,9 @@ fn protocol_to_operation(msg: &LdapMessage) -> Option<LdapOperation> {
             attribute: attribute.clone(),
             value: value.clone(),
         }),
+        LdapProtocolOp::AbandonRequest { message_id } => Some(LdapOperation::Abandon {
+            message_id: *message_id,
+        }),
         _ => None,
     }
 }
@@ -247,6 +250,22 @@ mod tests {
                 assert_eq!(value, "admin");
             }
             _ => panic!("Expected Compare operation"),
+        }
+    }
+
+    #[test]
+    fn test_protocol_to_operation_abandon() {
+        let msg = LdapMessage {
+            message_id: 4,
+            protocol_op: LdapProtocolOp::AbandonRequest { message_id: 10 },
+        };
+
+        let operation = protocol_to_operation(&msg).unwrap();
+        match operation {
+            LdapOperation::Abandon { message_id } => {
+                assert_eq!(message_id, 10);
+            }
+            _ => panic!("Expected Abandon operation"),
         }
     }
 
