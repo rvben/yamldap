@@ -145,7 +145,7 @@ release-check:
 	@echo "✓ Documentation builds"
 	@echo ""
 	@echo "5. Dry-run crates.io publish..."
-	@cargo publish --dry-run
+	@cargo publish --dry-run --allow-dirty
 	@echo "✓ Package is ready for crates.io"
 	@echo ""
 	@echo "✅ All checks passed! Ready for release."

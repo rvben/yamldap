@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.2] - 2025-06-13
+
+### Fixed
+- Fixed critical DN attribute type case sensitivity issue that incorrectly rejected uppercase DNs
+- Fixed LDAP search filtering that was returning all entries regardless of filter criteria
+- Fixed incorrect LDAP error code (34 - InvalidDNSyntax) being returned instead of (49 - InvalidCredentials) for authentication failures
+- Fixed search request parsing to properly handle filters instead of hardcoding (objectClass=*)
+- Fixed clippy warnings about manual string stripping
+
+### Added
+- Comprehensive tests for DN case insensitivity
+- Support for composite LDAP filters (AND, OR, NOT)
+- Support for substring filters in LDAP searches
+- Tests verifying correct LDAP error codes are returned
+
+### Changed
+- Enhanced LDAP filter parser to support nested and complex filter expressions
+- Improved SimpleLdapCodec to properly parse search request filters from ASN.1
+
 ## [0.0.1] - 2025-06-11
 
 ### Added
