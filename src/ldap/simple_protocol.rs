@@ -271,6 +271,83 @@ impl SimpleLdapCodec {
                     .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
                 Ok(format!("({}=*)", attr))
             }
+            0xA8 => {
+                // Approximate Match: (attr~=value)
+                let _end_pos = cursor.position() + length as u64;
+                let attr = Self::read_string(cursor)?;
+                let value = Self::read_string(cursor)?;
+                Ok(format!("({}~={})", attr, value))
+            }
+            0xA9 => {
+                // Extensible Match
+                let end_pos = cursor.position() + length as u64;
+                let mut matching_rule = None;
+                let mut attr_type = None;
+                let mut match_value = String::new();
+                let mut dn_attributes = false;
+
+                while cursor.position() < end_pos {
+                    if cursor.remaining() < 1 {
+                        break;
+                    }
+                    let tag = cursor.get_u8();
+                    let len = Self::read_length(cursor)?;
+
+                    match tag {
+                        0x81 => {
+                            // matchingRule [1]
+                            let mut bytes = vec![0u8; len];
+                            cursor.copy_to_slice(&mut bytes);
+                            matching_rule = Some(String::from_utf8(bytes).map_err(|_| {
+                                io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
+                            })?);
+                        }
+                        0x82 => {
+                            // type [2]
+                            let mut bytes = vec![0u8; len];
+                            cursor.copy_to_slice(&mut bytes);
+                            attr_type = Some(String::from_utf8(bytes).map_err(|_| {
+                                io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
+                            })?);
+                        }
+                        0x83 => {
+                            // matchValue [3]
+                            let mut bytes = vec![0u8; len];
+                            cursor.copy_to_slice(&mut bytes);
+                            match_value = String::from_utf8(bytes).map_err(|_| {
+                                io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
+                            })?;
+                        }
+                        0x84 => {
+                            // dnAttributes [4] - BOOLEAN
+                            if len == 1 {
+                                dn_attributes = cursor.get_u8() != 0x00;
+                            }
+                        }
+                        _ => {
+                            // Skip unknown tags
+                            cursor.advance(len);
+                        }
+                    }
+                }
+
+                // Construct extensible filter string
+                let mut filter = String::from("(");
+                if let Some(attr) = attr_type {
+                    filter.push_str(&attr);
+                }
+                if dn_attributes {
+                    filter.push_str(":dn");
+                }
+                if let Some(rule) = matching_rule {
+                    filter.push(':');
+                    filter.push_str(&rule);
+                }
+                filter.push_str(":=");
+                filter.push_str(&match_value);
+                filter.push(')');
+                Ok(filter)
+            }
             _ => {
                 // Unknown filter type, skip it
                 cursor.set_position(cursor.position() + length as u64);

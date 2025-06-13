@@ -8,6 +8,8 @@ pub enum LdapFilter {
     Substring(String, SubstringFilter), // (attr=*value*)
     GreaterOrEqual(String, String),     // (attr>=value)
     LessOrEqual(String, String),        // (attr<=value)
+    Approximate(String, String),        // (attr~=value)
+    Extensible(ExtensibleFilter),       // (attr:dn:=value) or (attr:1.2.3.4:=value)
     And(Vec<LdapFilter>),               // (&(filter1)(filter2))
     Or(Vec<LdapFilter>),                // (|(filter1)(filter2))
     Not(Box<LdapFilter>),               // (!(filter))
@@ -18,6 +20,14 @@ pub struct SubstringFilter {
     pub initial: Option<String>,
     pub any: Vec<String>,
     pub final_: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtensibleFilter {
+    pub attribute: Option<String>,     // Optional attribute description
+    pub matching_rule: Option<String>, // Optional matching rule OID
+    pub value: String,                 // Assertion value
+    pub dn_attributes: bool,           // Whether to match DN components
 }
 
 impl LdapFilter {
@@ -63,6 +73,19 @@ impl LdapFilter {
                 }
             }
 
+            LdapFilter::Approximate(attr, value) => {
+                if let Some(attribute) = entry.get_attribute(attr) {
+                    attribute
+                        .values
+                        .iter()
+                        .any(|v| approximate_match(&v.as_string(), value))
+                } else {
+                    false
+                }
+            }
+
+            LdapFilter::Extensible(extensible) => extensible.matches(entry),
+
             LdapFilter::And(filters) => filters.iter().all(|f| f.matches(entry)),
 
             LdapFilter::Or(filters) => filters.iter().any(|f| f.matches(entry)),
@@ -100,6 +123,118 @@ impl SubstringFilter {
             false
         }
     }
+}
+
+impl ExtensibleFilter {
+    pub fn matches(&self, entry: &LdapEntry) -> bool {
+        // If dn_attributes is true, we should also match against DN components
+        // For now, we'll implement basic attribute matching
+
+        if let Some(attr) = &self.attribute {
+            // Standard attribute match with optional matching rule
+            if let Some(attribute) = entry.get_attribute(attr) {
+                attribute
+                    .values
+                    .iter()
+                    .any(|v| self.matches_value(&v.as_string()))
+            } else {
+                false
+            }
+        } else if self.dn_attributes {
+            // Match against DN components
+            // Extract RDN components and match
+            self.matches_dn_components(&entry.dn)
+        } else {
+            // No attribute specified and not matching DN - this is invalid
+            false
+        }
+    }
+
+    fn matches_value(&self, value: &str) -> bool {
+        // Apply matching rule if specified
+        if let Some(rule) = &self.matching_rule {
+            match rule.as_str() {
+                // Common matching rules (OIDs)
+                "2.5.13.2" | "caseIgnoreMatch" => value.eq_ignore_ascii_case(&self.value),
+                "2.5.13.5" | "caseExactMatch" => value == self.value,
+                // Add more matching rules as needed
+                _ => {
+                    // Unknown matching rule, fallback to case-insensitive
+                    value.eq_ignore_ascii_case(&self.value)
+                }
+            }
+        } else {
+            // No matching rule specified, use case-insensitive comparison
+            value.eq_ignore_ascii_case(&self.value)
+        }
+    }
+
+    fn matches_dn_components(&self, dn: &str) -> bool {
+        // Simple DN component matching
+        // Extract attribute=value pairs from DN
+        for component in dn.split(',') {
+            let component = component.trim();
+            if let Some(eq_pos) = component.find('=') {
+                let value = &component[eq_pos + 1..];
+                if self.matches_value(value) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+// Approximate match function - simple implementation
+// In a real LDAP server, this might use soundex or other algorithms
+fn approximate_match(value: &str, pattern: &str) -> bool {
+    // For now, implement as case-insensitive substring match
+    // This is a simplified version - real LDAP servers might use
+    // more sophisticated algorithms like soundex or metaphone
+    value.to_lowercase().contains(&pattern.to_lowercase())
+}
+
+// Helper function to unescape LDAP filter values
+fn unescape_filter_value(value: &str) -> String {
+    let mut result = String::new();
+    let mut chars = value.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            // Look for hex escape sequence
+            let hex1 = chars.next();
+            let hex2 = chars.next();
+
+            if let (Some(h1), Some(h2)) = (hex1, hex2) {
+                if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h1, h2), 16) {
+                    // Successfully parsed hex escape
+                    if let Ok(s) = std::str::from_utf8(&[byte]) {
+                        result.push_str(s);
+                    } else {
+                        // Invalid UTF-8, keep the escape sequence
+                        result.push('\\');
+                        result.push(h1);
+                        result.push(h2);
+                    }
+                } else {
+                    // Not valid hex, keep the escape sequence
+                    result.push('\\');
+                    result.push(h1);
+                    result.push(h2);
+                }
+            } else {
+                // Incomplete escape sequence
+                result.push('\\');
+                if let Some(h1) = hex1 {
+                    result.push(h1);
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
 }
 
 // Simple parser for LDAP filters
@@ -142,8 +277,28 @@ pub fn parse_ldap_filter(filter_str: &str) -> crate::Result<LdapFilter> {
         return Ok(LdapFilter::Present(attr_part.to_string()));
     }
 
+    // Check for extensible filter first (contains :=)
+    if let Some(ext_pos) = inner.find(":=") {
+        return parse_extensible_filter(inner, ext_pos);
+    }
+
+    // Check for approximate filter (~=)
+    if let Some(approx_pos) = inner.find("~=") {
+        let attr = inner[..approx_pos].to_string();
+        let value = unescape_filter_value(&inner[approx_pos + 2..]);
+        return Ok(LdapFilter::Approximate(attr, value));
+    }
+
     // Check for comparison filters
-    if let Some(eq_pos) = inner.find('=') {
+    if let Some(ge_pos) = inner.find(">=") {
+        let attr = inner[..ge_pos].to_string();
+        let value = unescape_filter_value(&inner[ge_pos + 2..]);
+        return Ok(LdapFilter::GreaterOrEqual(attr, value));
+    } else if let Some(le_pos) = inner.find("<=") {
+        let attr = inner[..le_pos].to_string();
+        let value = unescape_filter_value(&inner[le_pos + 2..]);
+        return Ok(LdapFilter::LessOrEqual(attr, value));
+    } else if let Some(eq_pos) = inner.find('=') {
         let attr = inner[..eq_pos].to_string();
         let value = inner[eq_pos + 1..].to_string();
 
@@ -154,36 +309,72 @@ pub fn parse_ldap_filter(filter_str: &str) -> crate::Result<LdapFilter> {
                 initial: if parts[0].is_empty() {
                     None
                 } else {
-                    Some(parts[0].to_string())
+                    Some(unescape_filter_value(parts[0]))
                 },
                 any: parts[1..parts.len() - 1]
                     .iter()
-                    .map(|s| s.to_string())
+                    .map(|s| unescape_filter_value(s))
                     .collect(),
                 final_: if parts[parts.len() - 1].is_empty() {
                     None
                 } else {
-                    Some(parts[parts.len() - 1].to_string())
+                    Some(unescape_filter_value(parts[parts.len() - 1]))
                 },
             };
             return Ok(LdapFilter::Substring(attr, substring));
         }
 
-        return Ok(LdapFilter::Equality(attr, value));
-    } else if let Some(ge_pos) = inner.find(">=") {
-        let attr = inner[..ge_pos].to_string();
-        let value = inner[ge_pos + 2..].to_string();
-        return Ok(LdapFilter::GreaterOrEqual(attr, value));
-    } else if let Some(le_pos) = inner.find("<=") {
-        let attr = inner[..le_pos].to_string();
-        let value = inner[le_pos + 2..].to_string();
-        return Ok(LdapFilter::LessOrEqual(attr, value));
+        return Ok(LdapFilter::Equality(attr, unescape_filter_value(&value)));
     }
 
     Err(crate::YamlLdapError::Protocol(format!(
         "Invalid filter format: {}",
         filter_str
     )))
+}
+
+// Helper function to parse extensible filters
+// Format: [attr][:dn][:matchingRule]:=value
+fn parse_extensible_filter(filter_str: &str, ext_pos: usize) -> crate::Result<LdapFilter> {
+    let left_part = &filter_str[..ext_pos];
+    let value = unescape_filter_value(&filter_str[ext_pos + 2..]);
+
+    // Parse the left part which can contain attribute, :dn, and matching rule
+    let parts: Vec<&str> = left_part.split(':').collect();
+
+    let mut attribute = None;
+    let mut matching_rule = None;
+    let mut dn_attributes = false;
+
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+
+        if *part == "dn" {
+            dn_attributes = true;
+        } else if i == 0 && !part.starts_with(|c: char| c.is_numeric()) {
+            // First non-empty part that doesn't start with a number is the attribute
+            attribute = Some(part.to_string());
+        } else {
+            // This is likely a matching rule (could be OID or name)
+            matching_rule = Some(part.to_string());
+        }
+    }
+
+    // Validate that we have at least an attribute or dn_attributes set
+    if attribute.is_none() && !dn_attributes {
+        return Err(crate::YamlLdapError::Protocol(
+            "Extensible filter must specify either an attribute or :dn".to_string(),
+        ));
+    }
+
+    Ok(LdapFilter::Extensible(ExtensibleFilter {
+        attribute,
+        matching_rule,
+        value,
+        dn_attributes,
+    }))
 }
 
 // Helper function to parse composite filters
@@ -366,5 +557,168 @@ mod tests {
 
         let filter = parse_ldap_filter("(!(uid=testuser))").unwrap();
         assert!(!filter.matches(&entry));
+    }
+
+    #[test]
+    fn test_parse_approximate_filter() {
+        let filter = parse_ldap_filter("(cn~=john)").unwrap();
+        assert_eq!(
+            filter,
+            LdapFilter::Approximate("cn".to_string(), "john".to_string())
+        );
+    }
+
+    #[test]
+    fn test_approximate_match() {
+        use crate::directory::entry::{AttributeSyntax, AttributeValue, LdapEntry};
+
+        let mut entry = LdapEntry::new("cn=John Smith,dc=example,dc=com".to_string());
+        entry.add_attribute(
+            "cn".to_string(),
+            vec![AttributeValue::String("John Smith".to_string())],
+            AttributeSyntax::String,
+        );
+
+        // Approximate match should find "john" in "John Smith"
+        let filter = parse_ldap_filter("(cn~=john)").unwrap();
+        assert!(filter.matches(&entry));
+
+        let filter = parse_ldap_filter("(cn~=smith)").unwrap();
+        assert!(filter.matches(&entry));
+
+        let filter = parse_ldap_filter("(cn~=jane)").unwrap();
+        assert!(!filter.matches(&entry));
+    }
+
+    #[test]
+    fn test_parse_extensible_filter() {
+        // Basic extensible filter with attribute
+        let filter = parse_ldap_filter("(cn:=john)").unwrap();
+        match filter {
+            LdapFilter::Extensible(ext) => {
+                assert_eq!(ext.attribute, Some("cn".to_string()));
+                assert_eq!(ext.value, "john");
+                assert!(!ext.dn_attributes);
+                assert!(ext.matching_rule.is_none());
+            }
+            _ => panic!("Expected extensible filter"),
+        }
+
+        // Extensible filter with DN matching
+        let filter = parse_ldap_filter("(cn:dn:=admin)").unwrap();
+        match filter {
+            LdapFilter::Extensible(ext) => {
+                assert_eq!(ext.attribute, Some("cn".to_string()));
+                assert_eq!(ext.value, "admin");
+                assert!(ext.dn_attributes);
+                assert!(ext.matching_rule.is_none());
+            }
+            _ => panic!("Expected extensible filter"),
+        }
+
+        // Extensible filter with matching rule
+        let filter = parse_ldap_filter("(cn:caseExactMatch:=John)").unwrap();
+        match filter {
+            LdapFilter::Extensible(ext) => {
+                assert_eq!(ext.attribute, Some("cn".to_string()));
+                assert_eq!(ext.value, "John");
+                assert!(!ext.dn_attributes);
+                assert_eq!(ext.matching_rule, Some("caseExactMatch".to_string()));
+            }
+            _ => panic!("Expected extensible filter"),
+        }
+
+        // Extensible filter with OID matching rule
+        let filter = parse_ldap_filter("(cn:2.5.13.5:=John)").unwrap();
+        match filter {
+            LdapFilter::Extensible(ext) => {
+                assert_eq!(ext.attribute, Some("cn".to_string()));
+                assert_eq!(ext.value, "John");
+                assert!(!ext.dn_attributes);
+                assert_eq!(ext.matching_rule, Some("2.5.13.5".to_string()));
+            }
+            _ => panic!("Expected extensible filter"),
+        }
+
+        // DN only extensible filter
+        let filter = parse_ldap_filter("(:dn:=example)").unwrap();
+        match filter {
+            LdapFilter::Extensible(ext) => {
+                assert!(ext.attribute.is_none());
+                assert_eq!(ext.value, "example");
+                assert!(ext.dn_attributes);
+            }
+            _ => panic!("Expected extensible filter"),
+        }
+    }
+
+    #[test]
+    fn test_extensible_filter_matching() {
+        use crate::directory::entry::{AttributeSyntax, AttributeValue, LdapEntry};
+
+        let mut entry = LdapEntry::new("cn=John Smith,ou=users,dc=example,dc=com".to_string());
+        entry.add_attribute(
+            "cn".to_string(),
+            vec![AttributeValue::String("John Smith".to_string())],
+            AttributeSyntax::String,
+        );
+
+        // Test basic extensible match
+        let filter = parse_ldap_filter("(cn:=john smith)").unwrap();
+        assert!(filter.matches(&entry));
+
+        // Test case exact match
+        let filter = parse_ldap_filter("(cn:caseExactMatch:=John Smith)").unwrap();
+        assert!(filter.matches(&entry));
+
+        let filter = parse_ldap_filter("(cn:caseExactMatch:=john smith)").unwrap();
+        assert!(!filter.matches(&entry));
+
+        // Test DN component matching
+        let filter = parse_ldap_filter("(:dn:=john smith)").unwrap();
+        assert!(filter.matches(&entry));
+
+        let filter = parse_ldap_filter("(:dn:=users)").unwrap();
+        assert!(filter.matches(&entry));
+
+        let filter = parse_ldap_filter("(:dn:=example)").unwrap();
+        assert!(filter.matches(&entry));
+    }
+
+    #[test]
+    fn test_escape_sequences() {
+        // Test parsing filters with escape sequences
+        let filter = parse_ldap_filter("(cn=John\\20Smith)").unwrap();
+        assert_eq!(
+            filter,
+            LdapFilter::Equality("cn".to_string(), "John Smith".to_string())
+        );
+
+        let filter = parse_ldap_filter("(cn=\\28test\\29)").unwrap();
+        assert_eq!(
+            filter,
+            LdapFilter::Equality("cn".to_string(), "(test)".to_string())
+        );
+
+        let filter = parse_ldap_filter("(cn=\\2a)").unwrap();
+        assert_eq!(
+            filter,
+            LdapFilter::Equality("cn".to_string(), "*".to_string())
+        );
+    }
+
+    #[test]
+    fn test_unescape_filter_value() {
+        assert_eq!(unescape_filter_value("test"), "test");
+        assert_eq!(unescape_filter_value("test\\20value"), "test value");
+        assert_eq!(unescape_filter_value("\\28test\\29"), "(test)");
+        assert_eq!(unescape_filter_value("\\2a"), "*");
+        assert_eq!(unescape_filter_value("\\5c"), "\\");
+        assert_eq!(unescape_filter_value("\\00"), "\0");
+
+        // Invalid escape sequences are preserved
+        assert_eq!(unescape_filter_value("\\"), "\\");
+        assert_eq!(unescape_filter_value("\\2"), "\\2");
+        assert_eq!(unescape_filter_value("\\zz"), "\\zz");
     }
 }

@@ -1,0 +1,54 @@
+directory:
+  base_dn: "dc=test,dc=com"
+
+entries:
+  - dn: "dc=test,dc=com"
+    objectClass: ["top", "domain"]
+    dc: "test"
+
+  - dn: "ou=people,dc=test,dc=com"
+    objectClass: ["top", "organizationalUnit"]
+    ou: "people"
+
+  - dn: "cn=John Smith,ou=people,dc=test,dc=com"
+    objectClass: ["top", "person", "inetOrgPerson"]
+    cn: "John Smith"
+    sn: "Smith"
+    givenName: "John"
+    mail: "john.smith@test.com"
+    uid: "jsmith"
+    userPassword: "secret123"
+
+  - dn: "cn=Jane Doe,ou=people,dc=test,dc=com"
+    objectClass: ["top", "person", "inetOrgPerson"]
+    cn: "Jane Doe"
+    sn: "Doe"
+    givenName: "Jane"
+    mail: "jane.doe@test.com"
+    uid: "jdoe"
+    userPassword: "secret456"
+
+  - dn: "cn=Johnny Johnson,ou=people,dc=test,dc=com"
+    objectClass: ["top", "person", "inetOrgPerson"]
+    cn: "Johnny Johnson"
+    sn: "Johnson"
+    givenName: "Johnny"
+    mail: "johnny.j@test.com"
+    uid: "jjohnson"
+    userPassword: "secret789"
+
+  - dn: "cn=Test User (with parens),ou=people,dc=test,dc=com"
+    objectClass: ["top", "person", "inetOrgPerson"]
+    cn: "Test User (with parens)"
+    sn: "User"
+    givenName: "Test"
+    description: "Test (with parens)"
+    uid: "testuser"
+
+  - dn: "cn=Admin User,ou=people,dc=test,dc=com"
+    objectClass: ["top", "person", "inetOrgPerson"]
+    cn: "Admin User"
+    sn: "User"
+    givenName: "Admin"
+    uid: "admin"
+    userPassword: "adminpass"
