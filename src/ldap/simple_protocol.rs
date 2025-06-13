@@ -16,6 +16,7 @@ const LDAP_SEARCH_RESULT_ENTRY: u8 = 0x64;
 const LDAP_SEARCH_RESULT_DONE: u8 = 0x65;
 const LDAP_COMPARE_REQUEST: u8 = 0x6e;
 const LDAP_COMPARE_RESPONSE: u8 = 0x6f;
+const LDAP_ABANDON_REQUEST: u8 = 0x50;
 
 pub struct SimpleLdapCodec;
 
@@ -495,6 +496,29 @@ impl Decoder for SimpleLdapCodec {
                     dn,
                     attribute,
                     value,
+                }
+            }
+
+            LDAP_ABANDON_REQUEST => {
+                // Abandon request is encoded as [APPLICATION 16] INTEGER
+                // The content is directly the message ID as an integer
+                let length = Self::read_length(&mut cursor)?;
+
+                // Read the message ID directly from the remaining bytes
+                if length > 4 || cursor.remaining() < length {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Invalid abandon message ID",
+                    ));
+                }
+
+                let mut abandon_message_id = 0u32;
+                for _ in 0..length {
+                    abandon_message_id = (abandon_message_id << 8) | (cursor.get_u8() as u32);
+                }
+
+                LdapProtocolOp::AbandonRequest {
+                    message_id: abandon_message_id,
                 }
             }
 
@@ -1027,6 +1051,43 @@ mod tests {
                 assert_eq!(value, "test");
             }
             _ => panic!("Expected CompareRequest"),
+        }
+    }
+
+    #[test]
+    fn test_decode_abandon_request() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::new();
+
+        // Create abandon request
+        // Message: SEQUENCE { messageID INTEGER, AbandonRequest [APPLICATION 16] MessageID }
+        let mut message_content = BytesMut::new();
+
+        // Message ID
+        message_content.put_u8(0x02); // INTEGER
+        message_content.put_u8(0x01); // length 1
+        message_content.put_u8(0x01); // value 1
+
+        // AbandonRequest [APPLICATION 16] - contains message ID to abandon
+        message_content.put_u8(0x50); // Abandon request tag
+        message_content.put_u8(0x01); // length 1
+        message_content.put_u8(0x05); // message ID 5 to abandon
+
+        // Wrap in SEQUENCE
+        buf.put_u8(0x30); // SEQUENCE
+        buf.put_u8(message_content.len() as u8);
+        buf.put(message_content);
+
+        let result = codec.decode(&mut buf);
+        assert!(result.is_ok());
+        let msg = result.unwrap().unwrap();
+        assert_eq!(msg.message_id, 1);
+
+        match msg.protocol_op {
+            LdapProtocolOp::AbandonRequest { message_id } => {
+                assert_eq!(message_id, 5);
+            }
+            _ => panic!("Expected AbandonRequest"),
         }
     }
 
