@@ -243,10 +243,10 @@ mod tests {
         // This tests that the Server struct has the expected fields
         // which improves coverage of the struct definition
         use std::mem;
-        
+
         // Test that Server has the expected size (this will vary by platform)
         let _size = mem::size_of::<Server>();
-        
+
         // Test that we can access the fields through pattern matching
         // (This won't compile but shows the structure exists)
     }

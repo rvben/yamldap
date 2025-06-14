@@ -280,7 +280,7 @@ mod tests {
         };
 
         let path = Path::new("/tmp/test.yaml");
-        
+
         // Test data modification
         let event = Event {
             kind: EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Content)),
@@ -291,7 +291,9 @@ mod tests {
 
         // Test metadata modification
         let event = Event {
-            kind: EventKind::Modify(ModifyKind::Metadata(notify::event::MetadataKind::Permissions)),
+            kind: EventKind::Modify(ModifyKind::Metadata(
+                notify::event::MetadataKind::Permissions,
+            )),
             paths: vec![path.to_path_buf()],
             attrs: Default::default(),
         };
@@ -309,14 +311,14 @@ mod tests {
     #[tokio::test]
     async fn test_yaml_watcher_with_symlink() {
         use std::os::unix::fs::symlink;
-        
+
         let temp_dir = tempfile::tempdir().unwrap();
         let real_file = temp_dir.path().join("real.yaml");
         let symlink_file = temp_dir.path().join("link.yaml");
-        
+
         std::fs::write(&real_file, "test: data").unwrap();
         symlink(&real_file, &symlink_file).unwrap();
-        
+
         // Should be able to watch through symlink
         let result = YamlWatcher::new(&symlink_file);
         assert!(result.is_ok());

@@ -102,7 +102,10 @@ entries: []
 
         let result = parse_directory_file(temp_file.path()).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Base DN cannot be empty"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Base DN cannot be empty"));
     }
 
     #[tokio::test]
@@ -121,7 +124,10 @@ entries:
 
         let result = parse_directory_file(temp_file.path()).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Entry DN cannot be empty"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Entry DN cannot be empty"));
     }
 
     #[tokio::test]
@@ -140,7 +146,10 @@ entries:
 
         let result = parse_directory_file(temp_file.path()).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must have at least one objectClass"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must have at least one objectClass"));
     }
 
     #[tokio::test]
@@ -166,7 +175,10 @@ entries:
 
         let result = parse_directory_file(temp_file.path()).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("missing required attribute sn"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing required attribute sn"));
     }
 
     #[tokio::test]
@@ -234,21 +246,24 @@ entries:
         use std::collections::HashMap;
 
         let schema = YamlSchema::default();
-        
+
         // Test empty entries - should succeed
         let result = validate_entries(&[], &schema);
         assert!(result.is_ok());
 
         // Test valid entry
         let mut attrs = HashMap::new();
-        attrs.insert("cn".to_string(), serde_yaml::Value::String("test".to_string()));
-        
+        attrs.insert(
+            "cn".to_string(),
+            serde_yaml::Value::String("test".to_string()),
+        );
+
         let entries = vec![YamlEntry {
             dn: "cn=test,dc=example,dc=com".to_string(),
             object_class: vec!["top".to_string()],
             attributes: attrs,
         }];
-        
+
         let result = validate_entries(&entries, &schema);
         assert!(result.is_ok());
     }
