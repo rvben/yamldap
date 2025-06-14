@@ -314,13 +314,30 @@ make ci
 
 ### Testing & Coverage
 
-The project includes comprehensive unit tests with ~63% code coverage:
-- 148 unit tests covering all major components
+The project includes comprehensive unit tests with ~80% code coverage:
+- 220 unit tests covering all major components
 - Integration tests for LDAP operations
 - Performance benchmarks with Criterion
 - Test coverage reporting via cargo-tarpaulin
 
 Run `make help` to see all available Make targets.
+
+### Fuzz Testing
+
+yamldap includes fuzz testing to ensure robustness against malformed input:
+
+```bash
+# Install cargo-fuzz
+cargo install cargo-fuzz
+
+# Run fuzz tests (requires nightly Rust)
+cd fuzz
+cargo +nightly fuzz run fuzz_ldap_decoder      # Fuzz the LDAP decoder
+cargo +nightly fuzz run fuzz_ldap_filter_parser # Fuzz the filter parser
+cargo +nightly fuzz run fuzz_ldap_structured    # Fuzz with structured input
+```
+
+See [fuzz/README.md](fuzz/README.md) for detailed fuzzing instructions.
 
 ## Limitations
 

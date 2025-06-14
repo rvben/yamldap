@@ -88,6 +88,12 @@ impl SimpleLdapCodec {
             ));
         }
 
+        if buf.remaining() < length {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("Not enough bytes: need {} but only {} available", length, buf.remaining()),
+            ));
+        }
         let mut bytes = vec![0u8; length];
         buf.copy_to_slice(&mut bytes);
 
@@ -212,6 +218,12 @@ impl SimpleLdapCodec {
                     while cursor.position() < _end_pos {
                         let sub_tag = cursor.get_u8();
                         let sub_len = Self::read_length(cursor)?;
+                        if cursor.remaining() < sub_len {
+                            return Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                format!("Not enough bytes for substring: need {} but only {} available", sub_len, cursor.remaining()),
+                            ));
+                        }
                         let mut bytes = vec![0u8; sub_len];
                         cursor.copy_to_slice(&mut bytes);
                         let value = String::from_utf8(bytes).map_err(|_| {
@@ -265,6 +277,12 @@ impl SimpleLdapCodec {
             }
             0x87 => {
                 // Present: (attr=*)
+                if cursor.remaining() < length {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        format!("Not enough bytes for present attr: need {} but only {} available", length, cursor.remaining()),
+                    ));
+                }
                 let mut bytes = vec![0u8; length];
                 cursor.copy_to_slice(&mut bytes);
                 let attr = String::from_utf8(bytes)
@@ -296,6 +314,12 @@ impl SimpleLdapCodec {
                     match tag {
                         0x81 => {
                             // matchingRule [1]
+                            if cursor.remaining() < len {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    format!("Not enough bytes for matching rule: need {} but only {} available", len, cursor.remaining()),
+                                ));
+                            }
                             let mut bytes = vec![0u8; len];
                             cursor.copy_to_slice(&mut bytes);
                             matching_rule = Some(String::from_utf8(bytes).map_err(|_| {
@@ -304,6 +328,12 @@ impl SimpleLdapCodec {
                         }
                         0x82 => {
                             // type [2]
+                            if cursor.remaining() < len {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    format!("Not enough bytes for attr type: need {} but only {} available", len, cursor.remaining()),
+                                ));
+                            }
                             let mut bytes = vec![0u8; len];
                             cursor.copy_to_slice(&mut bytes);
                             attr_type = Some(String::from_utf8(bytes).map_err(|_| {
@@ -312,6 +342,12 @@ impl SimpleLdapCodec {
                         }
                         0x83 => {
                             // matchValue [3]
+                            if cursor.remaining() < len {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    format!("Not enough bytes for match value: need {} but only {} available", len, cursor.remaining()),
+                                ));
+                            }
                             let mut bytes = vec![0u8; len];
                             cursor.copy_to_slice(&mut bytes);
                             match_value = String::from_utf8(bytes).map_err(|_| {
@@ -429,6 +465,12 @@ impl Decoder for SimpleLdapCodec {
                     if auth_tag == 0x80 {
                         // Simple authentication
                         let pass_len = Self::read_length(&mut cursor)?;
+                        if cursor.remaining() < pass_len {
+                            return Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                format!("Not enough bytes for password: need {} but only {} available", pass_len, cursor.remaining()),
+                            ));
+                        }
                         let mut pass_bytes = vec![0u8; pass_len];
                         cursor.copy_to_slice(&mut pass_bytes);
                         let password = String::from_utf8(pass_bytes).map_err(|_| {
@@ -615,6 +657,12 @@ impl Decoder for SimpleLdapCodec {
                     ));
                 }
                 let name_len = Self::read_length(&mut cursor)?;
+                if cursor.remaining() < name_len {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        format!("Not enough bytes for attr name: need {} but only {} available", name_len, cursor.remaining()),
+                    ));
+                }
                 let mut name_bytes = vec![0u8; name_len];
                 cursor.copy_to_slice(&mut name_bytes);
                 let name = String::from_utf8(name_bytes).map_err(|_| {
@@ -627,6 +675,12 @@ impl Decoder for SimpleLdapCodec {
                 {
                     cursor.get_u8(); // Consume tag
                     let value_len = Self::read_length(&mut cursor)?;
+                    if cursor.remaining() < value_len {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            format!("Not enough bytes for attr value: need {} but only {} available", value_len, cursor.remaining()),
+                        ));
+                    }
                     let mut value_bytes = vec![0u8; value_len];
                     cursor.copy_to_slice(&mut value_bytes);
                     Some(value_bytes)

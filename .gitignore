@@ -28,3 +28,15 @@ cobertura.xml
 
 # Assets
 assets/*.png
+
+# Build artifacts
+yamldap-linux-amd64
+docker-context/
+
+# Fuzz testing
+fuzz/artifacts/
+fuzz/corpus/
+
+# Code coverage profiling
+*.profraw
+*.profdata
