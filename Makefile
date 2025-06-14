@@ -7,6 +7,21 @@ all: build
 build:
 	cargo build --release
 
+# Build for a specific target
+build-target:
+	@if [ -z "$(TARGET)" ]; then echo "Usage: make build-target TARGET=x86_64-unknown-linux-gnu"; exit 1; fi
+	@echo "Building for target: $(TARGET)"
+	cargo build --release --target $(TARGET)
+
+# Build all release targets
+build-all-targets:
+	@echo "Building for all targets..."
+	@$(MAKE) build-target TARGET=x86_64-unknown-linux-gnu || echo "Skipping Linux x64 build - cross-compilation not available"
+	@$(MAKE) build-target TARGET=aarch64-unknown-linux-gnu || echo "Skipping Linux ARM64 build - cross-compilation not available"
+	@$(MAKE) build-target TARGET=x86_64-pc-windows-msvc || echo "Skipping Windows build on non-Windows host"
+	@$(MAKE) build-target TARGET=x86_64-apple-darwin || echo "Skipping macOS x64 build on non-macOS host"
+	@$(MAKE) build-target TARGET=aarch64-apple-darwin || echo "Skipping macOS ARM build on non-macOS host"
+
 # Run all tests
 test:
 	cargo test --all-features -- --nocapture
@@ -25,11 +40,11 @@ coverage:
 
 # Run tests with coverage and open report
 coverage-open: coverage
-	open coverage/tarpaulin-report.html
+	open coverage/tarpaulin-report.html || xdg-open coverage/tarpaulin-report.html
 
 # Check coverage percentage
 coverage-check:
-	cargo tarpaulin --all-features
+	cargo tarpaulin --all-features --print-summary
 
 # Run benchmarks
 bench:
@@ -39,6 +54,7 @@ bench:
 clean:
 	cargo clean
 	rm -rf target/
+	rm -rf docker-context/
 
 # Run the server locally
 run:
@@ -48,39 +64,74 @@ run:
 docker-build:
 	docker build -t yamldap:latest .
 
-# Build Docker image for multiple platforms (requires buildx)
-docker-buildx:
+# Setup Docker buildx for multi-platform builds
+docker-setup:
+	@if ! docker buildx ls | grep -q yamldap-builder; then \
+		docker buildx create --name yamldap-builder --driver docker-container --bootstrap || true; \
+	fi
+	docker buildx use yamldap-builder
+	docker buildx inspect --bootstrap
+
+# Build multi-platform Docker image using buildx
+docker-buildx: docker-setup
 	docker buildx build --platform linux/amd64,linux/arm64 -t yamldap:latest .
 
-# Build and push to GitHub Container Registry
-docker-push: docker-login
-	@if [ -z "$(VERSION)" ]; then echo "Usage: make docker-push VERSION=0.0.1"; exit 1; fi
-	docker buildx build --platform linux/amd64 \
-		-t ghcr.io/rvben/yamldap:$(VERSION) \
-		-t ghcr.io/rvben/yamldap:latest \
-		--push .
-
-# Build and push multi-platform to GitHub Container Registry
-docker-push-multiplatform: docker-login
-	@if [ -z "$(VERSION)" ]; then echo "Usage: make docker-push-multiplatform VERSION=0.0.1"; exit 1; fi
-	docker buildx build --platform linux/amd64,linux/arm64 \
-		-t ghcr.io/rvben/yamldap:$(VERSION) \
-		-t ghcr.io/rvben/yamldap:latest \
-		--push .
+# Build multi-platform Docker image from pre-built binaries (for releases)
+docker-buildx-release: docker-setup
+	@if [ ! -f "target/x86_64-unknown-linux-gnu/release/yamldap" ] || [ ! -f "target/aarch64-unknown-linux-gnu/release/yamldap" ]; then \
+		echo "Error: Pre-built binaries not found. Run 'make build-all-targets' first"; \
+		exit 1; \
+	fi
+	@mkdir -p docker-context
+	@cp target/x86_64-unknown-linux-gnu/release/yamldap docker-context/yamldap-amd64
+	@cp target/aarch64-unknown-linux-gnu/release/yamldap docker-context/yamldap-arm64
+	@chmod +x docker-context/yamldap-*
+	@echo "FROM scratch" > docker-context/Dockerfile
+	@echo "ARG TARGETARCH" >> docker-context/Dockerfile
+	@echo "COPY yamldap-\$${TARGETARCH} /yamldap" >> docker-context/Dockerfile
+	@echo "EXPOSE 389" >> docker-context/Dockerfile
+	@echo "ENTRYPOINT [\"/yamldap\"]" >> docker-context/Dockerfile
+	docker buildx build --platform linux/amd64,linux/arm64 -t yamldap:latest docker-context/
 
 # Login to GitHub Container Registry
 docker-login:
-	@echo "Logging into GitHub Container Registry..."
-	@echo "$$GITHUB_TOKEN" | docker login ghcr.io -u rvben --password-stdin
+	@if [ -z "$$GITHUB_TOKEN" ]; then echo "Error: GITHUB_TOKEN not set"; exit 1; fi
+	@echo "$$GITHUB_TOKEN" | docker login ghcr.io -u $$GITHUB_ACTOR --password-stdin
 
-# Setup Docker buildx for multi-platform builds
-docker-setup:
-	docker buildx create --name yamldap-builder --use || true
-	docker buildx inspect --bootstrap
+# Push multi-platform image to GitHub Container Registry
+docker-push: docker-login docker-buildx
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make docker-push VERSION=0.1.0"; exit 1; fi
+	@REPO_OWNER=$$(echo "$$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' || echo "rvben"); \
+	docker buildx build --platform linux/amd64,linux/arm64 \
+		-t ghcr.io/$$REPO_OWNER/yamldap:$(VERSION) \
+		-t ghcr.io/$$REPO_OWNER/yamldap:latest \
+		--push .
+
+# Push multi-platform release image (from pre-built binaries)
+docker-push-release: docker-login
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make docker-push-release VERSION=0.1.0"; exit 1; fi
+	@if [ ! -f "target/x86_64-unknown-linux-gnu/release/yamldap" ] || [ ! -f "target/aarch64-unknown-linux-gnu/release/yamldap" ]; then \
+		echo "Error: Pre-built binaries not found. Run 'make build-all-targets' first"; \
+		exit 1; \
+	fi
+	@mkdir -p docker-context
+	@cp target/x86_64-unknown-linux-gnu/release/yamldap docker-context/yamldap-amd64
+	@cp target/aarch64-unknown-linux-gnu/release/yamldap docker-context/yamldap-arm64
+	@chmod +x docker-context/yamldap-*
+	@echo "FROM scratch" > docker-context/Dockerfile
+	@echo "ARG TARGETARCH" >> docker-context/Dockerfile
+	@echo "COPY yamldap-\$${TARGETARCH} /yamldap" >> docker-context/Dockerfile
+	@echo "EXPOSE 389" >> docker-context/Dockerfile
+	@echo "ENTRYPOINT [\"/yamldap\"]" >> docker-context/Dockerfile
+	@REPO_OWNER=$$(echo "$$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' || echo "rvben"); \
+	docker buildx build --platform linux/amd64,linux/arm64 \
+		-t ghcr.io/$$REPO_OWNER/yamldap:$(VERSION) \
+		-t ghcr.io/$$REPO_OWNER/yamldap:latest \
+		--push docker-context/
 
 # Run with Docker
 docker-run:
-	docker run -d --name yamldap -p 389:389 -v $(PWD)/examples/sample_directory.yaml:/data/directory.yaml yamldap:latest -f /data/directory.yaml --allow-anonymous
+	docker run -d --name yamldap -p 389:389 -v $$(pwd)/examples/sample_directory.yaml:/data/directory.yaml yamldap:latest -f /data/directory.yaml --allow-anonymous
 
 # Run with Docker Compose (local build)
 docker-compose-up:
@@ -90,11 +141,10 @@ docker-compose-up:
 docker-compose-registry:
 	docker compose -f compose.registry.yml up -d
 
-# Stop Docker container
+# Stop Docker containers
 docker-stop:
 	docker stop yamldap && docker rm yamldap || true
 	docker compose down || true
-
 
 # Run linting
 lint:
@@ -112,17 +162,30 @@ fmt-check:
 check:
 	cargo check --all-features
 
-# Run all checks (format, lint, type check, test)
+# Run all CI checks (format, lint, type check, test)
 ci: fmt-check check lint test
 
 # Test with LDAP client
 test-ldap:
 	@echo "Testing LDAP server..."
-	@./test_ldap.py || true
+	@python3 test_ldap.py || true
+
+# Publish to crates.io
+publish-crate:
+	@if [ -z "$$CRATES_IO_TOKEN" ]; then echo "Error: CRATES_IO_TOKEN not set"; exit 1; fi
+	cargo publish --token $$CRATES_IO_TOKEN
+
+# Dry run publish to crates.io
+publish-crate-dry:
+	cargo publish --dry-run
 
 # Release preparation
 release-prep:
-	@./scripts/prepare-release.sh
+	@if [ -f scripts/prepare-release.sh ]; then \
+		./scripts/prepare-release.sh; \
+	else \
+		echo "Release preparation script not found"; \
+	fi
 
 # Check if ready for release
 release-check:
@@ -157,31 +220,46 @@ release-check:
 # Help target
 help:
 	@echo "Available targets:"
-	@echo "  make build          - Build the project in release mode"
-	@echo "  make test           - Run all tests"
-	@echo "  make test-unit      - Run unit tests only"
-	@echo "  make test-integration - Run integration tests only"
-	@echo "  make coverage       - Run tests with coverage report"
-	@echo "  make coverage-open  - Run coverage and open HTML report"
-	@echo "  make coverage-check - Check coverage percentage"
-	@echo "  make bench          - Run benchmarks"
-	@echo "  make clean          - Clean build artifacts"
-	@echo "  make run            - Run the server locally"
-	@echo "  make docker-build   - Build Docker image (local, current platform)"
-	@echo "  make docker-buildx  - Build Docker image for multiple platforms"
-	@echo "  make docker-push VERSION=x.x.x - Build and push to ghcr.io (AMD64)"
-	@echo "  make docker-push-multiplatform VERSION=x.x.x - Push multi-arch to ghcr.io"
-	@echo "  make docker-setup   - Setup Docker buildx for multi-platform builds"
-	@echo "  make docker-run     - Run with Docker"
-	@echo "  make docker-compose-up - Run with Docker Compose (local build)"
-	@echo "  make docker-compose-registry - Run with Docker Compose (from registry)"
-	@echo "  make docker-stop    - Stop Docker containers"
-	@echo "  make test-ldap      - Test with LDAP client"
-	@echo "  make lint           - Run linting with clippy"
-	@echo "  make fmt            - Format code"
-	@echo "  make fmt-check      - Check code formatting"
-	@echo "  make check          - Type check the code"
-	@echo "  make ci             - Run all checks (format, lint, type check, test)"
-	@echo "  make release-check  - Check if ready for release"
-	@echo "  make release-prep   - Prepare a new release"
-	@echo "  make help           - Show this help message"
+	@echo ""
+	@echo "Building:"
+	@echo "  make build                 - Build the project in release mode"
+	@echo "  make build-target TARGET=  - Build for a specific target"
+	@echo "  make build-all-targets     - Build for all supported targets"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make test                  - Run all tests"
+	@echo "  make test-unit            - Run unit tests only"
+	@echo "  make test-integration     - Run integration tests only"
+	@echo "  make coverage             - Run tests with coverage report"
+	@echo "  make coverage-open        - Run coverage and open HTML report"
+	@echo "  make coverage-check       - Check coverage percentage"
+	@echo "  make bench                - Run benchmarks"
+	@echo "  make test-ldap            - Test with LDAP client"
+	@echo ""
+	@echo "Code Quality:"
+	@echo "  make lint                 - Run linting with clippy"
+	@echo "  make fmt                  - Format code"
+	@echo "  make fmt-check            - Check code formatting"
+	@echo "  make check                - Type check the code"
+	@echo "  make ci                   - Run all CI checks"
+	@echo ""
+	@echo "Docker:"
+	@echo "  make docker-build         - Build Docker image (current platform)"
+	@echo "  make docker-buildx        - Build multi-platform image"
+	@echo "  make docker-buildx-release - Build multi-platform from binaries"
+	@echo "  make docker-push VERSION= - Push multi-platform image"
+	@echo "  make docker-push-release VERSION= - Push release image"
+	@echo "  make docker-run           - Run with Docker"
+	@echo "  make docker-compose-up    - Run with Docker Compose"
+	@echo "  make docker-stop          - Stop Docker containers"
+	@echo ""
+	@echo "Release:"
+	@echo "  make release-check        - Check if ready for release"
+	@echo "  make release-prep         - Prepare a new release"
+	@echo "  make publish-crate        - Publish to crates.io"
+	@echo "  make publish-crate-dry    - Dry run crates.io publish"
+	@echo ""
+	@echo "Other:"
+	@echo "  make run                  - Run the server locally"
+	@echo "  make clean                - Clean build artifacts"
+	@echo "  make help                 - Show this help message"

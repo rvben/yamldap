@@ -68,7 +68,7 @@ jobs:
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           fi
-          cargo build --release --target ${{ matrix.target }}
+          make build-target TARGET=${{ matrix.target }}
         shell: bash
 
       - name: Upload binary
@@ -145,13 +145,15 @@ jobs:
 
       - name: Publish to crates.io
         if: ${{ inputs.dry_run != true }}
-        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
+        run: make publish-crate
+        env:
+          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 
       - name: Test crates.io publish (dry run)
         if: ${{ inputs.dry_run == true }}
         run: |
           echo "DRY RUN: Would publish to crates.io"
-          cargo publish --dry-run --locked
+          make publish-crate-dry
 
   publish-docker:
     name: Publish Docker Images
@@ -229,41 +231,16 @@ jobs:
 
       - name: Build and push Docker images
         if: ${{ inputs.dry_run != true }}
-        env:
-          DOCKER_CLI_EXPERIMENTAL: enabled
         run: |
-          # Build and push architecture-specific images
-          echo "Building AMD64 image..."
-          docker build \
-            --build-arg TARGETARCH=amd64 \
-            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64 \
-            docker-context/
-          docker push ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64
-          
-          echo "Building ARM64 image..."
-          docker build \
-            --build-arg TARGETARCH=arm64 \
-            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64 \
-            docker-context/
-          docker push ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64
-          
-          # Create and push multi-arch manifests
-          echo "Creating multi-arch manifest..."
-          docker manifest create \
-            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }} \
-            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64
-          
-          docker manifest push ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}
-          
-          docker manifest create \
-            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:latest \
-            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64
-          
-          docker manifest push ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:latest
+          # Copy binaries and push using make target
+          mkdir -p target/x86_64-unknown-linux-gnu/release target/aarch64-unknown-linux-gnu/release
+          cp artifacts/yamldap-linux-amd64/yamldap target/x86_64-unknown-linux-gnu/release/yamldap
+          cp artifacts/yamldap-linux-arm64/yamldap target/aarch64-unknown-linux-gnu/release/yamldap
+          make docker-push-release VERSION=${{ steps.version.outputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
 
       - name: Test Docker build (dry run)
         if: ${{ inputs.dry_run == true }}
@@ -277,18 +254,16 @@ jobs:
           echo "  - ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:latest"
           echo "- Platforms: linux/amd64, linux/arm64"
 
-          # Test build for current platform
-          mkdir -p test-context
+          # Test build using make target
           if [ -f "artifacts/yamldap-linux-amd64/yamldap" ]; then
-            cp artifacts/yamldap-linux-amd64/yamldap test-context/yamldap-amd64
+            mkdir -p target/x86_64-unknown-linux-gnu/release
+            cp artifacts/yamldap-linux-amd64/yamldap target/x86_64-unknown-linux-gnu/release/yamldap
           fi
-          cat > test-context/Dockerfile << 'EOF'
-          FROM scratch
-          COPY yamldap-amd64 /yamldap
-          EXPOSE 3389
-          ENTRYPOINT ["/yamldap"]
-          EOF
-          docker build -t yamldap:test test-context/
+          if [ -f "artifacts/yamldap-linux-arm64/yamldap" ]; then
+            mkdir -p target/aarch64-unknown-linux-gnu/release
+            cp artifacts/yamldap-linux-arm64/yamldap target/aarch64-unknown-linux-gnu/release/yamldap
+          fi
+          make docker-buildx-release
 
   summary:
     name: Release Summary
