@@ -2887,7 +2887,7 @@ dependencies = [
 
 [[package]]
 name = "yamldap"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

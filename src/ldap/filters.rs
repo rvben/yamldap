@@ -721,4 +721,188 @@ mod tests {
         assert_eq!(unescape_filter_value("\\2"), "\\2");
         assert_eq!(unescape_filter_value("\\zz"), "\\zz");
     }
+
+    #[test]
+    fn test_parse_filter_edge_cases() {
+        // Empty filter
+        assert!(parse_ldap_filter("").is_err());
+        
+        // Missing closing parenthesis
+        assert!(parse_ldap_filter("(cn=test").is_err());
+        
+        // Missing opening parenthesis
+        assert!(parse_ldap_filter("cn=test)").is_err());
+        
+        // Double parentheses - actually valid as it's a filter within parentheses
+        assert!(parse_ldap_filter("((cn=test))").is_ok());
+        
+        // Empty parentheses
+        assert!(parse_ldap_filter("()").is_err());
+        
+        // Invalid attribute name with special chars
+        assert!(parse_ldap_filter("(cn#=test)").is_ok()); // # is actually valid in attribute names
+        
+        // Very long attribute name
+        let long_attr = "a".repeat(1000);
+        let filter = format!("({}=test)", long_attr);
+        assert!(parse_ldap_filter(&filter).is_ok());
+        
+        // Very long value
+        let long_value = "v".repeat(10000);
+        let filter = format!("(cn={})", long_value);
+        assert!(parse_ldap_filter(&filter).is_ok());
+    }
+
+    #[test]
+    fn test_parse_complex_nested_filters() {
+        // Deeply nested AND/OR
+        let filter = "(&(|(cn=a)(cn=b))(|(sn=c)(sn=d))(!(uid=e)))";
+        let parsed = parse_ldap_filter(filter).unwrap();
+        match parsed {
+            LdapFilter::And(filters) => {
+                assert_eq!(filters.len(), 3);
+                assert!(matches!(&filters[0], LdapFilter::Or(_)));
+                assert!(matches!(&filters[1], LdapFilter::Or(_)));
+                assert!(matches!(&filters[2], LdapFilter::Not(_)));
+            }
+            _ => panic!("Expected AND filter"),
+        }
+        
+        // Maximum nesting depth
+        let mut nested = String::from("(cn=test)");
+        for _ in 0..50 {
+            nested = format!("(!{})", nested);
+        }
+        assert!(parse_ldap_filter(&nested).is_ok());
+    }
+
+    #[test]
+    fn test_extensible_filter_edge_cases() {
+        // Empty matching rule
+        let filter = ExtensibleFilter {
+            attribute: Some("cn".to_string()),
+            matching_rule: Some(String::new()),
+            value: "test".to_string(),
+            dn_attributes: false,
+        };
+        assert!(filter.matches_value("test"));
+        
+        // Empty attribute with DN matching
+        let filter = ExtensibleFilter {
+            attribute: None,
+            matching_rule: Some("caseIgnoreMatch".to_string()),
+            value: "admin".to_string(),
+            dn_attributes: true,
+        };
+        assert!(filter.matches_dn_components("cn=admin,dc=example,dc=com"));
+        
+        // Both attr and dn_attributes
+        let filter = ExtensibleFilter {
+            attribute: Some("cn".to_string()),
+            matching_rule: None,
+            value: "test".to_string(),
+            dn_attributes: true,
+        };
+        assert!(filter.matches_value("test"));
+    }
+
+    #[test]
+    fn test_filter_special_characters_in_values() {
+        // Unicode in filters
+        let filter = parse_ldap_filter("(cn=用户)").unwrap();
+        match filter {
+            LdapFilter::Equality(attr, val) => {
+                assert_eq!(attr, "cn");
+                assert_eq!(val, "用户");
+            }
+            _ => panic!("Expected equality filter"),
+        }
+        
+        // Emoji in filters
+        let filter = parse_ldap_filter("(description=Hello 😀 World)").unwrap();
+        match filter {
+            LdapFilter::Equality(attr, val) => {
+                assert_eq!(attr, "description");
+                assert_eq!(val, "Hello 😀 World");
+            }
+            _ => panic!("Expected equality filter"),
+        }
+        
+        // Mixed escape sequences and Unicode
+        let filter = parse_ldap_filter("(cn=test\\28用户\\29)").unwrap();
+        match filter {
+            LdapFilter::Equality(attr, val) => {
+                assert_eq!(attr, "cn");
+                assert_eq!(val, "test(用户)");
+            }
+            _ => panic!("Expected equality filter"),
+        }
+    }
+
+    #[test]
+    fn test_filter_whitespace_handling() {
+        // Leading/trailing spaces in values are significant
+        let filter = parse_ldap_filter("(cn= test )").unwrap();
+        match filter {
+            LdapFilter::Equality(attr, val) => {
+                assert_eq!(attr, "cn");
+                assert_eq!(val, " test ");
+            }
+            _ => panic!("Expected equality filter"),
+        }
+        
+        // Spaces around operators should fail
+        assert!(parse_ldap_filter("(cn = test)").is_err());
+        assert!(parse_ldap_filter("(cn =test)").is_err());
+        
+        // Newlines and tabs in values
+        let filter = parse_ldap_filter("(description=line1\nline2\ttab)").unwrap();
+        match filter {
+            LdapFilter::Equality(attr, val) => {
+                assert_eq!(attr, "description");
+                assert_eq!(val, "line1\nline2\ttab");
+            }
+            _ => panic!("Expected equality filter"),
+        }
+    }
+
+    #[test]
+    fn test_substring_filter_complex_patterns() {
+        // Multiple wildcards
+        let filter = parse_ldap_filter("(cn=*a*b*c*)").unwrap();
+        match filter {
+            LdapFilter::Substring(attr, sub) => {
+                assert_eq!(attr, "cn");
+                assert!(sub.initial.is_none());
+                assert!(sub.final_.is_none());
+                assert_eq!(sub.any, vec!["a", "b", "c"]);
+            }
+            _ => panic!("Expected substring filter"),
+        }
+        
+        // Adjacent wildcards  
+        let filter = parse_ldap_filter("(cn=**test**)").unwrap();
+        match filter {
+            LdapFilter::Substring(attr, sub) => {
+                assert_eq!(attr, "cn");
+                assert!(sub.initial.is_none());
+                assert!(sub.final_.is_none());
+                // Adjacent wildcards create empty strings which get filtered
+                let non_empty: Vec<_> = sub.any.iter().filter(|s| !s.is_empty()).collect();
+                assert_eq!(non_empty, vec!["test"]);
+            }
+            _ => panic!("Expected substring filter"),
+        }
+        
+        // Escaped asterisk in substring
+        let filter = parse_ldap_filter("(cn=test\\2a*end)").unwrap();
+        match filter {
+            LdapFilter::Substring(attr, sub) => {
+                assert_eq!(attr, "cn");
+                assert_eq!(sub.initial, Some("test*".to_string()));
+                assert_eq!(sub.final_, Some("end".to_string()));
+            }
+            _ => panic!("Expected substring filter"),
+        }
+    }
 }
