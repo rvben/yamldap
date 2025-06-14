@@ -162,11 +162,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Linux binaries
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
       - name: Extract version
         id: version
         run: |
@@ -176,9 +171,6 @@ jobs:
             VERSION=latest
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          # Ensure lowercase for container registry
-          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "repo_owner=$REPO_OWNER" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -194,76 +186,30 @@ jobs:
       - name: Verify registry access
         if: ${{ inputs.dry_run != true }}
         run: |
-          echo "Checking registry access for ${{ github.actor }}..."
+          echo "Checking registry access..."
           echo "Repository: ${{ github.repository }}"
-          echo "Registry URL: ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap"
-          echo "Testing docker login..."
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          echo "Login successful!"
-
-          # Try to create/initialize the package by pushing a simple test image first
-          echo "Initializing package if needed..."
-          echo "FROM scratch" > Dockerfile.init
-          docker build -f Dockerfile.init -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:init .
-          docker push ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:init || echo "Package might already exist"
-          rm Dockerfile.init
-
-      - name: Prepare binaries for multi-arch build
-        run: |
-          # Create build context directory
-          mkdir -p docker-context
-
-          # Copy binaries with architecture-specific names
-          cp artifacts/yamldap-linux-amd64/yamldap docker-context/yamldap-amd64
-          cp artifacts/yamldap-linux-arm64/yamldap docker-context/yamldap-arm64
-
-          # Make binaries executable
-          chmod +x docker-context/yamldap-*
-
-          # Create multi-arch Dockerfile
-          cat > docker-context/Dockerfile << 'EOF'
-          FROM scratch
-          ARG TARGETARCH
-          COPY yamldap-${TARGETARCH} /yamldap
-          EXPOSE 3389
-          ENTRYPOINT ["/yamldap"]
-          EOF
+          echo "Registry URL: ghcr.io/rvben/yamldap"
 
       - name: Build and push Docker images
         if: ${{ inputs.dry_run != true }}
         run: |
-          # Copy binaries and push using make target
-          mkdir -p target/x86_64-unknown-linux-gnu/release target/aarch64-unknown-linux-gnu/release
-          cp artifacts/yamldap-linux-amd64/yamldap target/x86_64-unknown-linux-gnu/release/yamldap
-          cp artifacts/yamldap-linux-arm64/yamldap target/aarch64-unknown-linux-gnu/release/yamldap
-          make docker-push-release VERSION=${{ steps.version.outputs.version }}
+          # Build and push multi-arch image from source
+          make docker-push VERSION=${{ steps.version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
 
       - name: Test Docker build (dry run)
         if: ${{ inputs.dry_run == true }}
         run: |
-          echo "DRY RUN: Would build and push multi-arch Docker image using pre-built binaries"
-          echo "- Using artifacts:"
-          ls -la artifacts/
-          echo ""
+          echo "DRY RUN: Would build and push multi-arch Docker image from source"
           echo "- Would create multi-arch image with tags:"
-          echo "  - ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}"
-          echo "  - ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:latest"
+          echo "  - ghcr.io/rvben/yamldap:${{ steps.version.outputs.version }}"
+          echo "  - ghcr.io/rvben/yamldap:latest"
           echo "- Platforms: linux/amd64, linux/arm64"
-
-          # Test build using make target
-          if [ -f "artifacts/yamldap-linux-amd64/yamldap" ]; then
-            mkdir -p target/x86_64-unknown-linux-gnu/release
-            cp artifacts/yamldap-linux-amd64/yamldap target/x86_64-unknown-linux-gnu/release/yamldap
-          fi
-          if [ -f "artifacts/yamldap-linux-arm64/yamldap" ]; then
-            mkdir -p target/aarch64-unknown-linux-gnu/release
-            cp artifacts/yamldap-linux-arm64/yamldap target/aarch64-unknown-linux-gnu/release/yamldap
-          fi
-          make docker-buildx-release
+          echo ""
+          echo "Building multi-arch image locally (without push)..."
+          make docker-buildx
 
   summary:
     name: Release Summary

@@ -101,10 +101,9 @@ docker-login:
 # Push multi-platform image to GitHub Container Registry
 docker-push: docker-login docker-buildx
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make docker-push VERSION=0.1.0"; exit 1; fi
-	@REPO_OWNER=$$(echo "$$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' || echo "rvben"); \
 	docker buildx build --platform linux/amd64,linux/arm64 \
-		-t ghcr.io/$$REPO_OWNER/yamldap:$(VERSION) \
-		-t ghcr.io/$$REPO_OWNER/yamldap:latest \
+		-t ghcr.io/rvben/yamldap:$(VERSION) \
+		-t ghcr.io/rvben/yamldap:latest \
 		--push .
 
 # Push multi-platform release image (from pre-built binaries)
@@ -123,10 +122,9 @@ docker-push-release: docker-login
 	@echo "COPY yamldap-\$${TARGETARCH} /yamldap" >> docker-context/Dockerfile
 	@echo "EXPOSE 389" >> docker-context/Dockerfile
 	@echo "ENTRYPOINT [\"/yamldap\"]" >> docker-context/Dockerfile
-	@REPO_OWNER=$$(echo "$$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' || echo "rvben"); \
 	docker buildx build --platform linux/amd64,linux/arm64 \
-		-t ghcr.io/$$REPO_OWNER/yamldap:$(VERSION) \
-		-t ghcr.io/$$REPO_OWNER/yamldap:latest \
+		-t ghcr.io/rvben/yamldap:$(VERSION) \
+		-t ghcr.io/rvben/yamldap:latest \
 		--push docker-context/
 
 # Run with Docker
