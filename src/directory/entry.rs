@@ -503,14 +503,14 @@ mod tests {
     #[test]
     fn test_ldap_entry_with_empty_attributes() {
         let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
-        
+
         // Add attribute with empty string value
         entry.add_attribute(
             "description".to_string(),
             vec![AttributeValue::String(String::new())],
             AttributeSyntax::String,
         );
-        
+
         assert!(entry.has_attribute("description"));
         let attr = entry.get_attribute("description").unwrap();
         assert_eq!(attr.values.len(), 1);
@@ -522,7 +522,7 @@ mod tests {
         let entry = LdapEntry::new(String::new());
         assert_eq!(entry.dn, "");
         assert!(entry.attributes.is_empty());
-        
+
         // Empty DN should still work with matches_dn
         assert!(entry.matches_dn(""));
         assert!(!entry.matches_dn("cn=test"));
@@ -547,7 +547,7 @@ mod tests {
         let special_dn = r#"cn=John\, Doe,ou=Sales\+Marketing,dc=example,dc=com"#;
         let entry = LdapEntry::new(special_dn.to_string());
         assert_eq!(entry.dn, special_dn);
-        
+
         // Should match case-insensitively
         assert!(entry.matches_dn(r#"CN=John\, Doe,OU=Sales\+Marketing,DC=example,DC=com"#));
     }
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn test_ldap_entry_with_many_attributes() {
         let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
-        
+
         // Add many attributes
         for i in 0..100 {
             entry.add_attribute(
@@ -573,9 +573,9 @@ mod tests {
                 AttributeSyntax::String,
             );
         }
-        
+
         assert_eq!(entry.attributes.len(), 100);
-        
+
         // Check all attributes exist
         for i in 0..100 {
             assert!(entry.has_attribute(&format!("attr{}", i)));
@@ -587,17 +587,17 @@ mod tests {
     #[test]
     fn test_ldap_entry_attribute_with_many_values() {
         let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
-        
+
         // Add attribute with many values
         let values: Vec<AttributeValue> = (0..1000)
             .map(|i| AttributeValue::String(format!("value{}", i)))
             .collect();
-        
+
         entry.add_attribute("multivalue".to_string(), values, AttributeSyntax::String);
-        
+
         let attr = entry.get_attribute("multivalue").unwrap();
         assert_eq!(attr.values.len(), 1000);
-        
+
         // Check a few values
         assert_eq!(attr.values[0].as_string(), "value0");
         assert_eq!(attr.values[500].as_string(), "value500");
@@ -607,14 +607,14 @@ mod tests {
     #[test]
     fn test_ldap_entry_binary_attribute_edge_cases() {
         let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
-        
+
         // Empty binary
         entry.add_attribute(
             "empty".to_string(),
             vec![AttributeValue::Binary(vec![])],
             AttributeSyntax::Binary,
         );
-        
+
         // Large binary
         let large_binary = vec![0u8; 10000];
         entry.add_attribute(
@@ -622,7 +622,7 @@ mod tests {
             vec![AttributeValue::Binary(large_binary.clone())],
             AttributeSyntax::Binary,
         );
-        
+
         // Binary with all possible byte values
         let all_bytes: Vec<u8> = (0..=255).collect();
         entry.add_attribute(
@@ -630,11 +630,20 @@ mod tests {
             vec![AttributeValue::Binary(all_bytes.clone())],
             AttributeSyntax::Binary,
         );
-        
+
         // Verify they're stored correctly
         let empty_bytes: &[u8] = &[];
-        assert_eq!(entry.get_attribute("empty").unwrap().values[0].as_bytes(), empty_bytes);
-        assert_eq!(entry.get_attribute("large").unwrap().values[0].as_bytes(), large_binary.as_slice());
-        assert_eq!(entry.get_attribute("allbytes").unwrap().values[0].as_bytes(), all_bytes.as_slice());
+        assert_eq!(
+            entry.get_attribute("empty").unwrap().values[0].as_bytes(),
+            empty_bytes
+        );
+        assert_eq!(
+            entry.get_attribute("large").unwrap().values[0].as_bytes(),
+            large_binary.as_slice()
+        );
+        assert_eq!(
+            entry.get_attribute("allbytes").unwrap().values[0].as_bytes(),
+            all_bytes.as_slice()
+        );
     }
 }

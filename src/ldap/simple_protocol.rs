@@ -91,7 +91,11 @@ impl SimpleLdapCodec {
         if buf.remaining() < length {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
-                format!("Not enough bytes: need {} but only {} available", length, buf.remaining()),
+                format!(
+                    "Not enough bytes: need {} but only {} available",
+                    length,
+                    buf.remaining()
+                ),
             ));
         }
         let mut bytes = vec![0u8; length];
@@ -221,7 +225,11 @@ impl SimpleLdapCodec {
                         if cursor.remaining() < sub_len {
                             return Err(io::Error::new(
                                 io::ErrorKind::UnexpectedEof,
-                                format!("Not enough bytes for substring: need {} but only {} available", sub_len, cursor.remaining()),
+                                format!(
+                                    "Not enough bytes for substring: need {} but only {} available",
+                                    sub_len,
+                                    cursor.remaining()
+                                ),
                             ));
                         }
                         let mut bytes = vec![0u8; sub_len];
@@ -280,7 +288,11 @@ impl SimpleLdapCodec {
                 if cursor.remaining() < length {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
-                        format!("Not enough bytes for present attr: need {} but only {} available", length, cursor.remaining()),
+                        format!(
+                            "Not enough bytes for present attr: need {} but only {} available",
+                            length,
+                            cursor.remaining()
+                        ),
                     ));
                 }
                 let mut bytes = vec![0u8; length];
@@ -468,7 +480,11 @@ impl Decoder for SimpleLdapCodec {
                         if cursor.remaining() < pass_len {
                             return Err(io::Error::new(
                                 io::ErrorKind::UnexpectedEof,
-                                format!("Not enough bytes for password: need {} but only {} available", pass_len, cursor.remaining()),
+                                format!(
+                                    "Not enough bytes for password: need {} but only {} available",
+                                    pass_len,
+                                    cursor.remaining()
+                                ),
                             ));
                         }
                         let mut pass_bytes = vec![0u8; pass_len];
@@ -660,7 +676,11 @@ impl Decoder for SimpleLdapCodec {
                 if cursor.remaining() < name_len {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
-                        format!("Not enough bytes for attr name: need {} but only {} available", name_len, cursor.remaining()),
+                        format!(
+                            "Not enough bytes for attr name: need {} but only {} available",
+                            name_len,
+                            cursor.remaining()
+                        ),
                     ));
                 }
                 let mut name_bytes = vec![0u8; name_len];
@@ -678,7 +698,11 @@ impl Decoder for SimpleLdapCodec {
                     if cursor.remaining() < value_len {
                         return Err(io::Error::new(
                             io::ErrorKind::UnexpectedEof,
-                            format!("Not enough bytes for attr value: need {} but only {} available", value_len, cursor.remaining()),
+                            format!(
+                                "Not enough bytes for attr value: need {} but only {} available",
+                                value_len,
+                                cursor.remaining()
+                            ),
                         ));
                     }
                     let mut value_bytes = vec![0u8; value_len];
@@ -1348,12 +1372,12 @@ mod tests {
     fn test_decode_malformed_message() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
-        
+
         // Test 1: Invalid message with wrong sequence tag
         buf.put_u8(0x31); // Wrong tag (SET instead of SEQUENCE)
         buf.put_u8(0x05);
         buf.put_slice(&[0x02, 0x01, 0x01, 0x60, 0x00]);
-        
+
         let result = codec.decode(&mut buf);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
@@ -1362,7 +1386,7 @@ mod tests {
     #[test]
     fn test_decode_truncated_messages() {
         let mut codec = SimpleLdapCodec;
-        
+
         // Test truncated message ID
         let mut buf = BytesMut::new();
         buf.put_u8(0x30); // SEQUENCE
@@ -1370,7 +1394,7 @@ mod tests {
         buf.put_u8(0x02); // INTEGER tag
         buf.put_u8(0x02); // length 2 but only 1 byte follows
         buf.put_u8(0x01); // Only one byte instead of two
-        
+
         let result = codec.decode(&mut buf);
         assert!(result.is_err());
     }
@@ -1379,11 +1403,11 @@ mod tests {
     fn test_decode_invalid_length_encoding() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
-        
+
         // Invalid long form length - 0xFF means 127 octets for length, which is invalid
         buf.put_u8(0x30); // SEQUENCE
         buf.put_u8(0xFF); // Long form with 127 octets (way too many)
-        
+
         let result = codec.decode(&mut buf);
         // This will actually return Ok(None) because we don't have 127 bytes for the length
         assert!(result.is_ok());
@@ -1394,13 +1418,13 @@ mod tests {
     fn test_decode_oversized_message() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
-        
+
         // Message claiming to be larger than buffer
         buf.put_u8(0x30); // SEQUENCE
         buf.put_u8(0x84); // Long form, 4 bytes
         buf.put_slice(&[0x00, 0x10, 0x00, 0x00]); // 1MB size
         buf.put_slice(&[0x02, 0x01, 0x01]); // But only 3 bytes of data
-        
+
         let result = codec.decode(&mut buf);
         assert!(result.is_ok()); // Should return None (not enough data)
         assert!(result.unwrap().is_none());
@@ -1410,44 +1434,47 @@ mod tests {
     fn test_decode_invalid_operation_tag() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
-        
+
         let mut message_content = BytesMut::new();
         message_content.put_u8(0x02); // INTEGER
         message_content.put_u8(0x01); // length 1
         message_content.put_u8(0x01); // message ID 1
-        
+
         // Invalid operation tag
         message_content.put_u8(0x99); // Unknown APPLICATION tag
         message_content.put_u8(0x00); // empty content
-        
+
         buf.put_u8(0x30); // SEQUENCE
         buf.put_u8(message_content.len() as u8);
         buf.put(message_content);
-        
+
         let result = codec.decode(&mut buf);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unsupported operation tag"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported operation tag"));
     }
 
     #[test]
     fn test_decode_invalid_abandon_message_id() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
-        
+
         let mut message_content = BytesMut::new();
         message_content.put_u8(0x02); // INTEGER
         message_content.put_u8(0x01); // length 1
         message_content.put_u8(0x01); // message ID 1
-        
+
         // AbandonRequest with invalid length
         message_content.put_u8(0x50); // Abandon request tag
         message_content.put_u8(0x05); // length 5 (too long for message ID)
         message_content.put_slice(&[0x01, 0x02, 0x03, 0x04, 0x05]);
-        
+
         buf.put_u8(0x30); // SEQUENCE
         buf.put_u8(message_content.len() as u8);
         buf.put(message_content);
-        
+
         let result = codec.decode(&mut buf);
         assert!(result.is_err());
     }
@@ -1519,67 +1546,67 @@ mod tests {
 
         // Build search request with empty attributes list
         let mut search_content = BytesMut::new();
-        
+
         // Base DN (empty)
         search_content.put_u8(0x04); // OCTET STRING
         search_content.put_u8(0x00); // empty
-        
+
         // Scope
         search_content.put_u8(0x0A); // ENUMERATED
         search_content.put_u8(0x01);
         search_content.put_u8(0x02); // WholeSubtree
-        
+
         // DerefAliases
         search_content.put_u8(0x0A); // ENUMERATED
         search_content.put_u8(0x01);
         search_content.put_u8(0x00); // NeverDerefAliases
-        
+
         // Size limit
         search_content.put_u8(0x02); // INTEGER
         search_content.put_u8(0x01);
         search_content.put_u8(0x00); // 0
-        
+
         // Time limit
         search_content.put_u8(0x02); // INTEGER
         search_content.put_u8(0x01);
         search_content.put_u8(0x00); // 0
-        
+
         // Types only
         search_content.put_u8(0x01); // BOOLEAN
         search_content.put_u8(0x01);
         search_content.put_u8(0x00); // FALSE
-        
+
         // Filter - present filter (objectClass=*)
         search_content.put_u8(0x87); // Present filter
         search_content.put_u8(0x0B); // length
         search_content.put_slice(b"objectClass");
-        
+
         // NO attributes sequence - testing empty case
-        
+
         let search_len = search_content.len();
-        
+
         // Build the message
         let mut message_content = BytesMut::new();
-        
+
         // Message ID
         message_content.put_u8(0x02); // INTEGER
         message_content.put_u8(0x01);
         message_content.put_u8(0x01); // 1
-        
+
         // Search request
         message_content.put_u8(0x63); // SEARCH REQUEST
         message_content.put_u8(search_len as u8);
         message_content.put(search_content);
-        
+
         // Wrap in SEQUENCE
         buf.put_u8(0x30); // SEQUENCE
         buf.put_u8(message_content.len() as u8);
         buf.put(message_content);
-        
+
         let result = codec.decode(&mut buf);
         assert!(result.is_ok());
         let msg = result.unwrap().unwrap();
-        
+
         match msg.protocol_op {
             LdapProtocolOp::SearchRequest { attributes, .. } => {
                 assert!(attributes.is_empty());
@@ -1595,86 +1622,89 @@ mod tests {
 
         // Build search request with NOT filter
         let mut search_content = BytesMut::new();
-        
+
         // Base DN
         let base_dn = b"dc=example,dc=com";
         search_content.put_u8(0x04); // OCTET STRING
         search_content.put_u8(base_dn.len() as u8); // Correct length: 17
         search_content.put_slice(base_dn);
-        
+
         // Scope
         search_content.put_u8(0x0A); // ENUMERATED
         search_content.put_u8(0x01);
         search_content.put_u8(0x01); // SingleLevel
-        
+
         // DerefAliases
         search_content.put_u8(0x0A); // ENUMERATED
         search_content.put_u8(0x01);
         search_content.put_u8(0x00);
-        
+
         // Size limit
         search_content.put_u8(0x02); // INTEGER
         search_content.put_u8(0x01);
         search_content.put_u8(0x64); // 100
-        
+
         // Time limit
         search_content.put_u8(0x02); // INTEGER
         search_content.put_u8(0x01);
         search_content.put_u8(0x1E); // 30
-        
+
         // Types only
         search_content.put_u8(0x01); // BOOLEAN
         search_content.put_u8(0x01);
         search_content.put_u8(0xFF); // TRUE
-        
+
         // Filter - NOT filter containing equality
         let mut equality_content = BytesMut::new();
         // Build the equality filter content first
         equality_content.put_u8(0x04); // OCTET STRING
         equality_content.put_u8(0x02); // length of "cn"
         equality_content.put_slice(b"cn");
-        equality_content.put_u8(0x04); // OCTET STRING  
+        equality_content.put_u8(0x04); // OCTET STRING
         equality_content.put_u8(0x04); // length of "test"
         equality_content.put_slice(b"test");
-        
+
         // Now wrap in equality filter tag
         let mut not_content = BytesMut::new();
         not_content.put_u8(0xA3); // Equality
         not_content.put_u8(equality_content.len() as u8); // Correct length: 10
         not_content.put(equality_content);
-        
+
         search_content.put_u8(0xA2); // NOT filter
         search_content.put_u8(not_content.len() as u8);
         search_content.put(not_content);
-        
+
         // Attributes
         let mut attrs_content = BytesMut::new();
         attrs_content.put_u8(0x04); // OCTET STRING
         attrs_content.put_u8(0x02); // length of "cn"
         attrs_content.put_slice(b"cn");
-        
+
         search_content.put_u8(0x30); // SEQUENCE
         search_content.put_u8(attrs_content.len() as u8); // Correct length: 4
         search_content.put(attrs_content);
-        
+
         let search_len = search_content.len();
-        
+
         // Build the message
         let mut message_content = BytesMut::new();
-        
+
         // Message ID
         message_content.put_u8(0x02); // INTEGER
         message_content.put_u8(0x01);
         message_content.put_u8(0x02); // 2
-        
+
         // Search request
         message_content.put_u8(0x63); // SEARCH REQUEST
         if search_len > 127 {
-            panic!("Search content too long for simple encoding: {}", search_len);
+            panic!(
+                "Search content too long for simple encoding: {}",
+                search_len
+            );
         }
         message_content.put_u8(search_len as u8);
         message_content.put(search_content);
-        
+
         // Wrap in SEQUENCE
         buf.put_u8(0x30); // SEQUENCE
         let msg_len = message_content.len();
@@ -1683,9 +1713,9 @@ mod tests {
         }
         buf.put_u8(msg_len as u8);
         buf.put(message_content);
-        
+
         // Debug output removed - test is working now
-        
+
         let result = codec.decode(&mut buf);
         match &result {
             Err(e) => panic!("Decode failed: {:?}", e),
@@ -1693,9 +1723,15 @@ mod tests {
             Ok(Some(_)) => {} // Good
         }
         let msg = result.unwrap().unwrap();
-        
+
         match msg.protocol_op {
-            LdapProtocolOp::SearchRequest { filter, types_only, size_limit, time_limit, .. } => {
+            LdapProtocolOp::SearchRequest {
+                filter,
+                types_only,
+                size_limit,
+                time_limit,
+                ..
+            } => {
                 assert!(filter.contains("(!"));
                 assert!(filter.contains("cn=test"));
                 assert!(types_only);
@@ -1713,41 +1749,41 @@ mod tests {
 
         // Create extended request with both name and value
         let mut extended_content = BytesMut::new();
-        
+
         // requestName [0] - some OID
         let oid = "1.2.3.4.5";
         extended_content.put_u8(0x80); // Context-specific [0]
         extended_content.put_u8(oid.len() as u8);
         extended_content.put_slice(oid.as_bytes());
-        
+
         // requestValue [1] - some binary data
         let value_data = b"test value data";
         extended_content.put_u8(0x81); // Context-specific [1]
         extended_content.put_u8(value_data.len() as u8);
         extended_content.put_slice(value_data);
-        
+
         // Build the message
         let mut message_content = BytesMut::new();
-        
+
         // Message ID
         message_content.put_u8(0x02); // INTEGER
         message_content.put_u8(0x01);
         message_content.put_u8(0x03); // 3
-        
+
         // Extended request
         message_content.put_u8(0x77); // Extended request tag
         message_content.put_u8(extended_content.len() as u8);
         message_content.put(extended_content);
-        
+
         // Wrap in SEQUENCE
         buf.put_u8(0x30); // SEQUENCE
         buf.put_u8(message_content.len() as u8);
         buf.put(message_content);
-        
+
         let result = codec.decode(&mut buf);
         assert!(result.is_ok());
         let msg = result.unwrap().unwrap();
-        
+
         match msg.protocol_op {
             LdapProtocolOp::ExtendedRequest { name, value } => {
                 assert_eq!(name, "1.2.3.4.5");
@@ -1776,18 +1812,20 @@ mod tests {
         let result = codec.encode(msg, &mut buf);
         assert!(result.is_ok());
         assert!(!buf.is_empty());
-        
+
         // Verify structure
         assert_eq!(buf[0], 0x30); // SEQUENCE tag
-        
+
         // Verify the extended response contains both name and value
         let mut has_name = false;
         let mut has_value = false;
         for i in 0..buf.len() - 1 {
-            if buf[i] == 0x8A { // responseName tag
+            if buf[i] == 0x8A {
+                // responseName tag
                 has_name = true;
             }
-            if buf[i] == 0x8B { // responseValue tag
+            if buf[i] == 0x8B {
+                // responseValue tag
                 has_value = true;
             }
         }

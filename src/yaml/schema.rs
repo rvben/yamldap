@@ -138,7 +138,9 @@ mod tests {
         // Verify object classes were converted
         assert_eq!(yaml_schema.object_classes.len(), 2);
         assert!(yaml_schema.object_classes.contains_key("customPerson"));
-        assert!(yaml_schema.object_classes.contains_key("organizationalPerson"));
+        assert!(yaml_schema
+            .object_classes
+            .contains_key("organizationalPerson"));
 
         // Verify attributes for each object class
         let custom_person_attrs = &yaml_schema.object_classes["customPerson"];

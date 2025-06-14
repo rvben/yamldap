@@ -1,10 +1,10 @@
-use yamldap::{Config, Server};
-use std::io::{Write, Seek};
+use std::io::{Seek, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+use yamldap::{Config, Server};
 
 fn create_test_config(yaml_file: PathBuf, port: u16) -> Config {
     Config {
@@ -46,30 +46,29 @@ entries:
 async fn test_server_startup_and_shutdown() {
     let yaml_file = create_yaml_file();
     let config = create_test_config(yaml_file.path().to_path_buf(), 10389);
-    
+
     let server = Server::new(config.clone()).await.unwrap();
-    
+
     // Start server in background
-    let server_task = tokio::spawn(async move {
-        server.run().await
-    });
-    
+    let server_task = tokio::spawn(async move { server.run().await });
+
     // Give server time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Try to connect
     let connect_result = timeout(
         Duration::from_secs(1),
-        TcpStream::connect(&config.bind_address)
-    ).await;
-    
+        TcpStream::connect(&config.bind_address),
+    )
+    .await;
+
     assert!(connect_result.is_ok());
     let stream = connect_result.unwrap().unwrap();
     drop(stream);
-    
+
     // Cancel server task
     server_task.abort();
-    
+
     // Give time for cleanup
     tokio::time::sleep(Duration::from_millis(100)).await;
 }
@@ -79,21 +78,19 @@ async fn test_server_startup_and_shutdown() {
 async fn test_server_hot_reload() {
     let mut yaml_file = create_yaml_file();
     let config = create_test_config(yaml_file.path().to_path_buf(), 10390);
-    
+
     let server = Server::new(config.clone()).await.unwrap();
-    
+
     // Start server in background
-    let server_task = tokio::spawn(async move {
-        server.run().await
-    });
-    
+    let server_task = tokio::spawn(async move { server.run().await });
+
     // Give server time to start
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Connect and verify initial state
     let stream = TcpStream::connect(&config.bind_address).await.unwrap();
     drop(stream);
-    
+
     // Modify the YAML file
     yaml_file.rewind().unwrap();
     writeln!(
@@ -120,14 +117,14 @@ entries:
     )
     .unwrap();
     yaml_file.flush().unwrap();
-    
+
     // Give time for hot reload to process
     tokio::time::sleep(Duration::from_millis(500)).await;
-    
+
     // Server should still be running
     let connect_result = TcpStream::connect(&config.bind_address).await;
     assert!(connect_result.is_ok());
-    
+
     // Cancel server task
     server_task.abort();
 }
@@ -137,20 +134,18 @@ entries:
 async fn test_server_multiple_connections() {
     let yaml_file = create_yaml_file();
     let config = create_test_config(yaml_file.path().to_path_buf(), 10391);
-    
+
     let server = Server::new(config.clone()).await.unwrap();
-    
+
     // Start server in background
-    let server_task = tokio::spawn(async move {
-        server.run().await
-    });
-    
+    let server_task = tokio::spawn(async move { server.run().await });
+
     // Give server time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Create multiple concurrent connections
     let mut handles = vec![];
-    
+
     for i in 0..10 {
         let addr = config.bind_address.clone();
         let handle = tokio::spawn(async move {
@@ -162,13 +157,13 @@ async fn test_server_multiple_connections() {
         });
         handles.push(handle);
     }
-    
+
     // Wait for all connections to complete
     for handle in handles {
         let result = handle.await.unwrap();
         assert!(result < 10);
     }
-    
+
     // Cancel server task
     server_task.abort();
 }
@@ -176,7 +171,7 @@ async fn test_server_multiple_connections() {
 #[tokio::test]
 async fn test_server_bind_error() {
     let yaml_file = create_yaml_file();
-    
+
     // Try to bind to a privileged port (should fail on most systems without root)
     let config = Config {
         yaml_file: yaml_file.path().to_path_buf(),
@@ -186,10 +181,10 @@ async fn test_server_bind_error() {
         hot_reload: false,
         log_level: tracing::Level::INFO,
     };
-    
+
     let server = Server::new(config).await.unwrap();
     let result = server.run().await;
-    
+
     // Should fail to bind
     assert!(result.is_err());
 }
@@ -204,7 +199,7 @@ async fn test_server_invalid_yaml() {
         hot_reload: false,
         log_level: tracing::Level::INFO,
     };
-    
+
     let result = Server::new(config).await;
     assert!(result.is_err());
 }
@@ -236,22 +231,20 @@ entries:
     )
     .unwrap();
     file.flush().unwrap();
-    
+
     let config = create_test_config(file.path().to_path_buf(), 10393);
     let server = Server::new(config.clone()).await.unwrap();
-    
+
     // Start server in background
-    let server_task = tokio::spawn(async move {
-        server.run().await
-    });
-    
+    let server_task = tokio::spawn(async move { server.run().await });
+
     // Give server time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Try to connect
     let stream = TcpStream::connect(&config.bind_address).await.unwrap();
     drop(stream);
-    
+
     // Cancel server task
     server_task.abort();
 }

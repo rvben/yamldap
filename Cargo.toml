@@ -1,6 +1,6 @@
 [package]
 name = "yamldap"
-version = "0.0.10"
+version = "0.1.0"
 edition = "2021"
 authors = ["Ruben J. Jongejan <ruben.jongejan@gmail.com>"]
 description = "A lightweight LDAP server that serves directory data from YAML files"

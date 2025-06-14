@@ -48,7 +48,14 @@ fn test_cli_version() {
 #[test]
 fn test_cli_missing_file() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "yamldap", "--", "--file", "nonexistent.yaml"])
+        .args(&[
+            "run",
+            "--bin",
+            "yamldap",
+            "--",
+            "--file",
+            "nonexistent.yaml",
+        ])
         .output()
         .expect("Failed to execute process");
 
@@ -61,12 +68,17 @@ fn test_cli_missing_file() {
 fn test_cli_invalid_port() {
     let temp_dir = TempDir::new().unwrap();
     let yaml_path = create_test_yaml(&temp_dir);
-    
+
     let output = Command::new("cargo")
         .args(&[
-            "run", "--bin", "yamldap", "--",
-            "--file", yaml_path.to_str().unwrap(),
-            "--port", "99999", // Invalid port
+            "run",
+            "--bin",
+            "yamldap",
+            "--",
+            "--file",
+            yaml_path.to_str().unwrap(),
+            "--port",
+            "99999", // Invalid port
         ])
         .output()
         .expect("Failed to execute process");
@@ -78,13 +90,20 @@ fn test_cli_invalid_port() {
 fn test_cli_log_levels() {
     let temp_dir = TempDir::new().unwrap();
     let yaml_path = create_test_yaml(&temp_dir);
-    
-    for level in &["debug", "info", "warn", "error", "DEBUG", "INFO", "WARN", "ERROR"] {
+
+    for level in &[
+        "debug", "info", "warn", "error", "DEBUG", "INFO", "WARN", "ERROR",
+    ] {
         let output = Command::new("cargo")
             .args(&[
-                "run", "--bin", "yamldap", "--",
-                "--file", yaml_path.to_str().unwrap(),
-                "--log-level", level,
+                "run",
+                "--bin",
+                "yamldap",
+                "--",
+                "--file",
+                yaml_path.to_str().unwrap(),
+                "--log-level",
+                level,
                 "--help", // Just check args parsing, don't actually run server
             ])
             .output()
@@ -109,15 +128,12 @@ fn test_cli_all_arguments() {
     // We don't need the yaml file for this test
     // Just test that help output shows all arguments
     let output = Command::new("cargo")
-        .args(&[
-            "run", "--bin", "yamldap", "--",
-            "--help",
-        ])
+        .args(&["run", "--bin", "yamldap", "--", "--help"])
         .output()
         .expect("Failed to execute process");
 
     assert!(output.status.success());
-    
+
     // Also verify we can parse all arguments (without actually running)
     let output_str = String::from_utf8_lossy(&output.stdout);
     assert!(output_str.contains("--file"));

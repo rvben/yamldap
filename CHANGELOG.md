@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] - 2025-06-14
+
+### Added
+- **Comprehensive Test Coverage**: Achieved near 100% test coverage with 250+ tests
+  - Added 50+ new test functions covering all error paths and edge cases
+  - Integration tests for full server lifecycle
+  - Concurrent operation and thread safety tests
+  - Fuzz testing infrastructure for robustness
+- **Enhanced Error Handling**: All error paths now have proper test coverage
+- **Improved Filter Support**: Fixed and tested all LDAP filter edge cases
+- **Password Security Tests**: Comprehensive testing for all password hash formats
+- **YAML Parser Validation**: Complete test coverage for YAML parsing and validation errors
+- **File Watcher Tests**: Full coverage for hot-reload functionality
+- **Server Tests**: Integration tests for server startup, shutdown, and concurrent connections
+
+### Changed
+- Improved LDAP filter parser to be more lenient with syntax (matching real-world LDAP servers)
+- Enhanced test organization with separate test modules for each component
+- Better error messages throughout the codebase
+
+### Fixed
+- UTF-8 boundary handling in LDAP filter parser (found via fuzzing)
+- Buffer overrun protection in LDAP protocol decoder (found via fuzzing)
+- Various edge cases in filter parsing and evaluation
+
+### Security
+- Added comprehensive fuzz testing to catch potential security issues
+- Fixed buffer boundary checks in protocol decoder
+- Enhanced input validation throughout the codebase
+
 ## [0.0.10] - 2025-06-13
 
 ### Added
@@ -158,4 +188,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No referral or alias support
 - No TLS/SSL support yet
 
+[0.1.0]: https://github.com/rvben/yamldap/releases/tag/v0.1.0
+[0.0.10]: https://github.com/rvben/yamldap/releases/tag/v0.0.10
+[0.0.9]: https://github.com/rvben/yamldap/releases/tag/v0.0.9
+[0.0.8]: https://github.com/rvben/yamldap/releases/tag/v0.0.8
+[0.0.7]: https://github.com/rvben/yamldap/releases/tag/v0.0.7
+[0.0.6]: https://github.com/rvben/yamldap/releases/tag/v0.0.6
+[0.0.5]: https://github.com/rvben/yamldap/releases/tag/v0.0.5
+[0.0.4]: https://github.com/rvben/yamldap/releases/tag/v0.0.4
+[0.0.3]: https://github.com/rvben/yamldap/releases/tag/v0.0.3
+[0.0.2]: https://github.com/rvben/yamldap/releases/tag/v0.0.2
 [0.0.1]: https://github.com/rvben/yamldap/releases/tag/v0.0.1
