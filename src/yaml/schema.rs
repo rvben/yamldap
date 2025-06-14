@@ -96,3 +96,111 @@ impl Default for YamlSchema {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_schema_config_to_yaml_schema() {
+        let mut custom_attrs = HashMap::new();
+        custom_attrs.insert(
+            "employeeNumber".to_string(),
+            AttributeDef {
+                syntax: "String".to_string(),
+                single_value: true,
+            },
+        );
+        custom_attrs.insert(
+            "department".to_string(),
+            AttributeDef {
+                syntax: "String".to_string(),
+                single_value: false,
+            },
+        );
+
+        let schema_config = SchemaConfig {
+            object_classes: vec![
+                ObjectClassDef {
+                    name: "customPerson".to_string(),
+                    attributes: vec!["cn".to_string(), "employeeNumber".to_string()],
+                },
+                ObjectClassDef {
+                    name: "organizationalPerson".to_string(),
+                    attributes: vec!["title".to_string(), "department".to_string()],
+                },
+            ],
+            custom_attributes: custom_attrs,
+        };
+
+        let yaml_schema: YamlSchema = schema_config.into();
+
+        // Verify object classes were converted
+        assert_eq!(yaml_schema.object_classes.len(), 2);
+        assert!(yaml_schema.object_classes.contains_key("customPerson"));
+        assert!(yaml_schema.object_classes.contains_key("organizationalPerson"));
+
+        // Verify attributes for each object class
+        let custom_person_attrs = &yaml_schema.object_classes["customPerson"];
+        assert_eq!(custom_person_attrs.len(), 2);
+        assert!(custom_person_attrs.contains(&"cn".to_string()));
+        assert!(custom_person_attrs.contains(&"employeeNumber".to_string()));
+
+        let org_person_attrs = &yaml_schema.object_classes["organizationalPerson"];
+        assert_eq!(org_person_attrs.len(), 2);
+        assert!(org_person_attrs.contains(&"title".to_string()));
+        assert!(org_person_attrs.contains(&"department".to_string()));
+
+        // Verify custom attributes
+        assert_eq!(yaml_schema.custom_attributes.len(), 2);
+        assert!(yaml_schema.custom_attributes.contains_key("employeeNumber"));
+        assert!(yaml_schema.custom_attributes.contains_key("department"));
+
+        let emp_num_attr = &yaml_schema.custom_attributes["employeeNumber"];
+        assert_eq!(emp_num_attr.syntax, "String");
+        assert!(emp_num_attr.single_value);
+
+        let dept_attr = &yaml_schema.custom_attributes["department"];
+        assert_eq!(dept_attr.syntax, "String");
+        assert!(!dept_attr.single_value);
+    }
+
+    #[test]
+    fn test_yaml_schema_default() {
+        let schema = YamlSchema::default();
+
+        // Verify standard object classes are present
+        assert!(schema.object_classes.contains_key("top"));
+        assert!(schema.object_classes.contains_key("domain"));
+        assert!(schema.object_classes.contains_key("organizationalUnit"));
+        assert!(schema.object_classes.contains_key("person"));
+        assert!(schema.object_classes.contains_key("inetOrgPerson"));
+        assert!(schema.object_classes.contains_key("groupOfNames"));
+
+        // Verify some key attributes
+        let person_attrs = &schema.object_classes["person"];
+        assert!(person_attrs.contains(&"cn".to_string()));
+        assert!(person_attrs.contains(&"sn".to_string()));
+
+        let inet_org_attrs = &schema.object_classes["inetOrgPerson"];
+        assert!(inet_org_attrs.contains(&"uid".to_string()));
+        assert!(inet_org_attrs.contains(&"mail".to_string()));
+        assert!(inet_org_attrs.contains(&"userPassword".to_string()));
+
+        // Verify no custom attributes by default
+        assert!(schema.custom_attributes.is_empty());
+    }
+
+    #[test]
+    fn test_empty_schema_config() {
+        let schema_config = SchemaConfig {
+            object_classes: vec![],
+            custom_attributes: HashMap::new(),
+        };
+
+        let yaml_schema: YamlSchema = schema_config.into();
+
+        assert!(yaml_schema.object_classes.is_empty());
+        assert!(yaml_schema.custom_attributes.is_empty());
+    }
+}
