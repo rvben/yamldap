@@ -76,22 +76,6 @@ docker-setup:
 docker-buildx: docker-setup
 	docker buildx build --platform linux/amd64,linux/arm64 -t yamldap:latest .
 
-# Build multi-platform Docker image from pre-built binaries (for releases)
-docker-buildx-release: docker-setup
-	@if [ ! -f "target/x86_64-unknown-linux-gnu/release/yamldap" ] || [ ! -f "target/aarch64-unknown-linux-gnu/release/yamldap" ]; then \
-		echo "Error: Pre-built binaries not found. Run 'make build-all-targets' first"; \
-		exit 1; \
-	fi
-	@mkdir -p docker-context
-	@cp target/x86_64-unknown-linux-gnu/release/yamldap docker-context/yamldap-amd64
-	@cp target/aarch64-unknown-linux-gnu/release/yamldap docker-context/yamldap-arm64
-	@chmod +x docker-context/yamldap-*
-	@echo "FROM scratch" > docker-context/Dockerfile
-	@echo "ARG TARGETARCH" >> docker-context/Dockerfile
-	@echo "COPY yamldap-\$${TARGETARCH} /yamldap" >> docker-context/Dockerfile
-	@echo "EXPOSE 389" >> docker-context/Dockerfile
-	@echo "ENTRYPOINT [\"/yamldap\"]" >> docker-context/Dockerfile
-	docker buildx build --platform linux/amd64,linux/arm64 -t yamldap:latest docker-context/
 
 # Login to GitHub Container Registry
 docker-login:
@@ -106,26 +90,6 @@ docker-push: docker-login docker-buildx
 		-t ghcr.io/rvben/yamldap:latest \
 		--push .
 
-# Push multi-platform release image (from pre-built binaries)
-docker-push-release: docker-login
-	@if [ -z "$(VERSION)" ]; then echo "Usage: make docker-push-release VERSION=0.1.0"; exit 1; fi
-	@if [ ! -f "target/x86_64-unknown-linux-gnu/release/yamldap" ] || [ ! -f "target/aarch64-unknown-linux-gnu/release/yamldap" ]; then \
-		echo "Error: Pre-built binaries not found. Run 'make build-all-targets' first"; \
-		exit 1; \
-	fi
-	@mkdir -p docker-context
-	@cp target/x86_64-unknown-linux-gnu/release/yamldap docker-context/yamldap-amd64
-	@cp target/aarch64-unknown-linux-gnu/release/yamldap docker-context/yamldap-arm64
-	@chmod +x docker-context/yamldap-*
-	@echo "FROM scratch" > docker-context/Dockerfile
-	@echo "ARG TARGETARCH" >> docker-context/Dockerfile
-	@echo "COPY yamldap-\$${TARGETARCH} /yamldap" >> docker-context/Dockerfile
-	@echo "EXPOSE 389" >> docker-context/Dockerfile
-	@echo "ENTRYPOINT [\"/yamldap\"]" >> docker-context/Dockerfile
-	docker buildx build --platform linux/amd64,linux/arm64 \
-		-t ghcr.io/rvben/yamldap:$(VERSION) \
-		-t ghcr.io/rvben/yamldap:latest \
-		--push docker-context/
 
 # Run with Docker
 docker-run:
@@ -244,9 +208,7 @@ help:
 	@echo "Docker:"
 	@echo "  make docker-build         - Build Docker image (current platform)"
 	@echo "  make docker-buildx        - Build multi-platform image"
-	@echo "  make docker-buildx-release - Build multi-platform from binaries"
 	@echo "  make docker-push VERSION= - Push multi-platform image"
-	@echo "  make docker-push-release VERSION= - Push release image"
 	@echo "  make docker-run           - Run with Docker"
 	@echo "  make docker-compose-up    - Run with Docker Compose"
 	@echo "  make docker-stop          - Stop Docker containers"
