@@ -499,4 +499,142 @@ mod tests {
             AttributeSyntax::GeneralizedTime
         );
     }
+
+    #[test]
+    fn test_ldap_entry_with_empty_attributes() {
+        let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
+        
+        // Add attribute with empty string value
+        entry.add_attribute(
+            "description".to_string(),
+            vec![AttributeValue::String(String::new())],
+            AttributeSyntax::String,
+        );
+        
+        assert!(entry.has_attribute("description"));
+        let attr = entry.get_attribute("description").unwrap();
+        assert_eq!(attr.values.len(), 1);
+        assert_eq!(attr.values[0].as_string(), "");
+    }
+
+    #[test]
+    fn test_ldap_entry_with_empty_dn() {
+        let entry = LdapEntry::new(String::new());
+        assert_eq!(entry.dn, "");
+        assert!(entry.attributes.is_empty());
+        
+        // Empty DN should still work with matches_dn
+        assert!(entry.matches_dn(""));
+        assert!(!entry.matches_dn("cn=test"));
+    }
+
+    #[test]
+    fn test_ldap_entry_with_very_long_dn() {
+        // Test with a very long DN (common in deep organizational structures)
+        let long_dn = format!(
+            "cn=user,ou=level1,ou=level2,ou=level3,ou=level4,ou=level5,\
+             ou=level6,ou=level7,ou=level8,ou=level9,ou=level10,\
+             dc=very-long-domain-name-example,dc=com"
+        );
+        let entry = LdapEntry::new(long_dn.clone());
+        assert_eq!(entry.dn, long_dn);
+        assert!(entry.matches_dn(&long_dn));
+    }
+
+    #[test]
+    fn test_ldap_entry_with_special_chars_in_dn() {
+        // Test DN with special characters that need escaping
+        let special_dn = r#"cn=John\, Doe,ou=Sales\+Marketing,dc=example,dc=com"#;
+        let entry = LdapEntry::new(special_dn.to_string());
+        assert_eq!(entry.dn, special_dn);
+        
+        // Should match case-insensitively
+        assert!(entry.matches_dn(r#"CN=John\, Doe,OU=Sales\+Marketing,DC=example,DC=com"#));
+    }
+
+    #[test]
+    fn test_ldap_entry_with_unicode_dn() {
+        // Test DN with Unicode characters
+        let unicode_dn = "cn=用户,ou=组织,dc=例子,dc=com";
+        let entry = LdapEntry::new(unicode_dn.to_string());
+        assert_eq!(entry.dn, unicode_dn);
+        assert!(entry.matches_dn(unicode_dn));
+    }
+
+    #[test]
+    fn test_ldap_entry_with_many_attributes() {
+        let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
+        
+        // Add many attributes
+        for i in 0..100 {
+            entry.add_attribute(
+                format!("attr{}", i),
+                vec![AttributeValue::String(format!("value{}", i))],
+                AttributeSyntax::String,
+            );
+        }
+        
+        assert_eq!(entry.attributes.len(), 100);
+        
+        // Check all attributes exist
+        for i in 0..100 {
+            assert!(entry.has_attribute(&format!("attr{}", i)));
+            let attr = entry.get_attribute(&format!("attr{}", i)).unwrap();
+            assert_eq!(attr.values[0].as_string(), format!("value{}", i));
+        }
+    }
+
+    #[test]
+    fn test_ldap_entry_attribute_with_many_values() {
+        let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
+        
+        // Add attribute with many values
+        let values: Vec<AttributeValue> = (0..1000)
+            .map(|i| AttributeValue::String(format!("value{}", i)))
+            .collect();
+        
+        entry.add_attribute("multivalue".to_string(), values, AttributeSyntax::String);
+        
+        let attr = entry.get_attribute("multivalue").unwrap();
+        assert_eq!(attr.values.len(), 1000);
+        
+        // Check a few values
+        assert_eq!(attr.values[0].as_string(), "value0");
+        assert_eq!(attr.values[500].as_string(), "value500");
+        assert_eq!(attr.values[999].as_string(), "value999");
+    }
+
+    #[test]
+    fn test_ldap_entry_binary_attribute_edge_cases() {
+        let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
+        
+        // Empty binary
+        entry.add_attribute(
+            "empty".to_string(),
+            vec![AttributeValue::Binary(vec![])],
+            AttributeSyntax::Binary,
+        );
+        
+        // Large binary
+        let large_binary = vec![0u8; 10000];
+        entry.add_attribute(
+            "large".to_string(),
+            vec![AttributeValue::Binary(large_binary.clone())],
+            AttributeSyntax::Binary,
+        );
+        
+        // Binary with all possible byte values
+        let all_bytes: Vec<u8> = (0..=255).collect();
+        entry.add_attribute(
+            "allbytes".to_string(),
+            vec![AttributeValue::Binary(all_bytes.clone())],
+            AttributeSyntax::Binary,
+        );
+        
+        // Verify they're stored correctly
+        let empty_bytes: &[u8] = &[];
+        assert_eq!(entry.get_attribute("empty").unwrap().values[0].as_bytes(), empty_bytes);
+        assert_eq!(entry.get_attribute("large").unwrap().values[0].as_bytes(), large_binary.as_slice());
+        assert_eq!(entry.get_attribute("allbytes").unwrap().values[0].as_bytes(), all_bytes.as_slice());
+    }
 }

@@ -23,6 +23,7 @@ A lightweight LDAP server that serves directory data from YAML files, designed f
 - 🛠️ **Development Friendly** - Perfect for testing LDAP integrations locally
 - 🐳 **Docker Support** - Run in containers with provided Dockerfile
 - ⚡ **Lightweight** - Minimal resource usage, fast startup
+- 🎯 **Advanced Filters** - Full LDAP filter support including approximate and extensible match
 
 ## Installation
 
@@ -171,6 +172,37 @@ userPassword: "$2b$10$..."
 ### Complete Example
 See [examples/sample_directory.yaml](examples/sample_directory.yaml) for a full example with users, groups, and organizational units.
 
+## LDAP Filter Support
+
+yamldap supports comprehensive LDAP filter syntax including:
+
+### Basic Filters
+- **Equality**: `(uid=john)`
+- **Presence**: `(mail=*)`
+- **Substring**: `(cn=*smith*)`, `(cn=john*)`, `(cn=*doe)`
+- **Greater/Less**: `(age>=18)`, `(created<=20240101)`
+
+### Boolean Operators
+- **AND**: `(&(objectClass=person)(uid=admin))`
+- **OR**: `(|(uid=john)(uid=jane))`
+- **NOT**: `(!(uid=guest))`
+
+### Advanced Filters
+- **Approximate Match**: `(cn~=john)` - Fuzzy matching
+- **Extensible Match**: 
+  - Simple: `(cn:=John Doe)`
+  - With matching rule: `(cn:caseExactMatch:=John Doe)`
+  - DN components: `(:dn:=users)` - Matches entries with "users" in their DN
+  - Combined: `(cn:dn:caseIgnoreMatch:=admin)`
+
+### Escape Sequences
+Special characters can be escaped in filter values:
+- `\28` for `(`
+- `\29` for `)`
+- `\2a` for `*`
+- `\5c` for `\`
+- `\00` for NULL
+
 ## Testing Scripts
 
 ### Python Test Script
@@ -294,9 +326,35 @@ Run `make help` to see all available Make targets.
 
 - Read-only operations (no add/modify/delete support yet)
 - Basic LDAP v3 protocol support
-- Limited search filter syntax
 - No referral or alias support
-- No TLS/SSL support yet
+- No built-in TLS/SSL support (see below)
+
+## TLS/SSL Support
+
+yamldap intentionally does not include built-in TLS support to maintain its core value: simplicity. For local development and testing, TLS is rarely needed. When TLS is required, you can easily add it using a reverse proxy:
+
+### Using stunnel
+```bash
+# stunnel.conf
+[ldaps]
+accept = 636
+connect = 127.0.0.1:389
+cert = /path/to/certificate.pem
+```
+
+### Using nginx
+```nginx
+stream {
+    server {
+        listen 636 ssl;
+        proxy_pass localhost:389;
+        ssl_certificate /path/to/cert.pem;
+        ssl_certificate_key /path/to/key.pem;
+    }
+}
+```
+
+This approach keeps yamldap simple while allowing TLS when needed for production-like testing.
 
 ## Contributing
 

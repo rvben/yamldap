@@ -77,6 +77,12 @@ pub fn hash_password(password: &str, method: &str) -> crate::Result<String> {
             let hash = hasher.finalize();
             Ok(format!("{{SHA}}{}", BASE64.encode(hash)))
         }
+        "sha256" => {
+            let mut hasher = Sha256::new();
+            hasher.update(password.as_bytes());
+            let hash = hasher.finalize();
+            Ok(format!("{{SHA256}}{}", BASE64.encode(hash)))
+        }
         "ssha" => {
             use rand::Rng;
             let salt: [u8; 8] = rand::thread_rng().gen();
@@ -125,5 +131,75 @@ mod tests {
         let hashed = hash_password("test123", "bcrypt").unwrap();
         assert!(verify_password("test123", &hashed).unwrap());
         assert!(!verify_password("wrong", &hashed).unwrap());
+    }
+
+    #[test]
+    fn test_sha256_password() {
+        // Test with generated hash
+        let hashed = hash_password("test123", "sha256").unwrap();
+        assert!(verify_password("test123", &hashed).unwrap());
+        assert!(!verify_password("wrong", &hashed).unwrap());
+        
+        // Test with known hash
+        // "test123" in SHA256 = ecd71870d1963316a97e3ac3408c9835ad8cf0f3c1bc703527c30265534f75ae
+        let known_hash = "{SHA256}7NcYcNGWMxapfjrDQIyYNa2M8PPBvHA1J8MCZVNPda4=";
+        assert!(verify_password("test123", known_hash).unwrap());
+        assert!(!verify_password("test456", known_hash).unwrap());
+    }
+
+    #[test]
+    fn test_ssha_password() {
+        let hashed = hash_password("test123", "ssha").unwrap();
+        assert!(verify_password("test123", &hashed).unwrap());
+        assert!(!verify_password("wrong", &hashed).unwrap());
+        
+        // Test that two SSHA hashes of the same password are different (due to salt)
+        let hashed2 = hash_password("test123", "ssha").unwrap();
+        assert_ne!(hashed, hashed2);
+        assert!(verify_password("test123", &hashed2).unwrap());
+    }
+
+    #[test]
+    fn test_invalid_hash_format() {
+        // Test invalid base64 in SHA
+        assert!(verify_password("test", "{SHA}invalid!!!").is_err());
+        
+        // Test invalid base64 in SHA256
+        assert!(verify_password("test", "{SHA256}invalid!!!").is_err());
+        
+        // Test invalid base64 in SSHA
+        assert!(verify_password("test", "{SSHA}invalid!!!").is_err());
+        
+        // Test SSHA with too short decoded value
+        assert!(verify_password("test", "{SSHA}dGVzdA==").is_err()); // "test" in base64, too short
+    }
+
+    #[test]
+    fn test_bcrypt_with_prefix() {
+        // Test that bcrypt works with and without {BCRYPT} prefix
+        let hash_without_prefix = bcrypt::hash("test123", bcrypt::DEFAULT_COST).unwrap();
+        let hash_with_prefix = format!("{{BCRYPT}}{}", hash_without_prefix);
+        
+        assert!(verify_password("test123", &hash_without_prefix).unwrap());
+        assert!(verify_password("test123", &hash_with_prefix).unwrap());
+    }
+
+    #[test]
+    fn test_unknown_hash_method() {
+        assert!(hash_password("test", "md5").is_err());
+        assert!(hash_password("test", "unknown").is_err());
+    }
+
+    #[test]
+    fn test_empty_password() {
+        // Test empty passwords with various hash methods
+        assert!(verify_password("", "").unwrap());
+        assert!(!verify_password("something", "").unwrap());
+        
+        let sha_empty = hash_password("", "sha").unwrap();
+        assert!(verify_password("", &sha_empty).unwrap());
+        
+        let sha256_empty = hash_password("", "sha256").unwrap();
+        assert!(verify_password("", &sha256_empty).unwrap());
     }
 }
