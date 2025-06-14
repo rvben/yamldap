@@ -227,25 +227,43 @@ jobs:
           ENTRYPOINT ["/yamldap"]
           EOF
 
-      - name: Build and push multi-arch image
+      - name: Build and push Docker images
         if: ${{ inputs.dry_run != true }}
-        uses: docker/build-push-action@v5
-        with:
-          context: docker-context
-          file: docker-context/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}
-            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:latest
-          # Add labels to link the package to the repository
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Minimal LDAP server that uses YAML files as a data store
-            org.opencontainers.image.licenses=MIT
-          # Disable all extra features that might cause issues
-          provenance: false
-          sbom: false
+        env:
+          DOCKER_CLI_EXPERIMENTAL: enabled
+        run: |
+          # Build and push architecture-specific images
+          echo "Building AMD64 image..."
+          docker build \
+            --build-arg TARGETARCH=amd64 \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64 \
+            docker-context/
+          docker push ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64
+          
+          echo "Building ARM64 image..."
+          docker build \
+            --build-arg TARGETARCH=arm64 \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            -t ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64 \
+            docker-context/
+          docker push ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64
+          
+          # Create and push multi-arch manifests
+          echo "Creating multi-arch manifest..."
+          docker manifest create \
+            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }} \
+            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64 \
+            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64
+          
+          docker manifest push ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}
+          
+          docker manifest create \
+            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:latest \
+            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-amd64 \
+            ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:${{ steps.version.outputs.version }}-arm64
+          
+          docker manifest push ghcr.io/${{ steps.version.outputs.repo_owner }}/yamldap:latest
 
       - name: Test Docker build (dry run)
         if: ${{ inputs.dry_run == true }}

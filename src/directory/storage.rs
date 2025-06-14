@@ -392,6 +392,84 @@ mod tests {
     fn test_is_direct_child_edge_cases() {
         // Test with empty parent
         assert!(!is_direct_child("cn=test", ""));
+    }
+    
+    #[test]
+    fn test_from_yaml() {
+        use crate::yaml::schema::YamlDirectory;
+        use std::collections::HashMap;
+        
+        // Create a YAML directory structure
+        let yaml_dir = YamlDirectory {
+            directory: crate::yaml::schema::DirectoryConfig {
+                base_dn: "dc=example,dc=com".to_string(),
+            },
+            schema: None,
+            entries: vec![
+                crate::yaml::YamlEntry {
+                    dn: "dc=example,dc=com".to_string(),
+                    object_class: vec!["dcObject".to_string(), "organization".to_string()],
+                    attributes: {
+                        let mut attrs = HashMap::new();
+                        attrs.insert("dc".to_string(), serde_yaml::Value::String("example".to_string()));
+                        attrs
+                    },
+                },
+                crate::yaml::YamlEntry {
+                    dn: "cn=admin,dc=example,dc=com".to_string(),
+                    object_class: vec!["person".to_string()],
+                    attributes: {
+                        let mut attrs = HashMap::new();
+                        attrs.insert("cn".to_string(), serde_yaml::Value::String("admin".to_string()));
+                        attrs
+                    },
+                },
+            ],
+        };
+        
+        let schema = YamlSchema::default();
+        let directory = Directory::from_yaml(yaml_dir, schema);
+        
+        // Verify the base DN
+        assert_eq!(directory.base_dn, "dc=example,dc=com");
+        
+        // Verify entries were added
+        assert!(directory.entry_exists("dc=example,dc=com"));
+        assert!(directory.entry_exists("cn=admin,dc=example,dc=com"));
+        
+        // Verify entry content
+        let admin_entry = directory.get_entry("cn=admin,dc=example,dc=com").unwrap();
+        assert_eq!(admin_entry.dn, "cn=admin,dc=example,dc=com");
+        assert!(admin_entry.has_attribute("cn"));
+        assert!(admin_entry.has_attribute("objectClass"));
+    }
+    
+    #[test]
+    fn test_entry_exists() {
+        let schema = YamlSchema::default();
+        let directory = Directory::new("dc=test,dc=com".to_string(), schema);
+        
+        // Initially no entries
+        assert!(!directory.entry_exists("cn=test,dc=test,dc=com"));
+        
+        // Add an entry
+        let mut entry = LdapEntry::new("cn=test,dc=test,dc=com".to_string());
+        entry.add_attribute(
+            "cn".to_string(),
+            vec![crate::directory::entry::AttributeValue::String("test".to_string())],
+            crate::directory::entry::AttributeSyntax::String,
+        );
+        directory.add_entry(entry);
+        
+        // Now it should exist
+        assert!(directory.entry_exists("cn=test,dc=test,dc=com"));
+        
+        // Test case insensitive
+        assert!(directory.entry_exists("CN=TEST,DC=TEST,DC=COM"));
+        assert!(directory.entry_exists("cn=Test,dc=Test,dc=Com"));
+        
+        // Non-existent entry
+        assert!(!directory.entry_exists("cn=nonexistent,dc=test,dc=com"));
 
         // Test with child same as parent
         assert!(!is_direct_child("dc=com", "dc=com"));
@@ -410,5 +488,143 @@ mod tests {
 
         // Test with partial match
         assert!(!is_descendant("dc=com", "dc=example,dc=com"));
+    }
+
+    #[tokio::test]
+    async fn test_directory_concurrent_operations() {
+        use std::sync::Arc;
+        use tokio::task::JoinSet;
+        
+        let schema = YamlSchema::default();
+        let directory = Arc::new(Directory::new("dc=test,dc=com".to_string(), schema));
+        
+        let mut tasks = JoinSet::new();
+        
+        // Spawn multiple tasks to add entries concurrently
+        for i in 0..10 {
+            let dir = Arc::clone(&directory);
+            tasks.spawn(async move {
+                let mut entry = LdapEntry::new(format!("cn=user{},dc=test,dc=com", i));
+                entry.add_attribute(
+                    "cn".to_string(),
+                    vec![crate::directory::entry::AttributeValue::String(format!("user{}", i))],
+                    crate::directory::entry::AttributeSyntax::String,
+                );
+                entry.add_attribute(
+                    "uid".to_string(),
+                    vec![crate::directory::entry::AttributeValue::String(format!("uid{}", i))],
+                    crate::directory::entry::AttributeSyntax::String,
+                );
+                dir.add_entry(entry);
+            });
+        }
+        
+        // Wait for all tasks to complete
+        while let Some(result) = tasks.join_next().await {
+            assert!(result.is_ok());
+        }
+        
+        // Verify all entries were added
+        for i in 0..10 {
+            assert!(directory.entry_exists(&format!("cn=user{},dc=test,dc=com", i)));
+        }
+        
+        // Test concurrent reads while writing
+        let mut tasks = JoinSet::new();
+        
+        // Spawn readers
+        for _ in 0..5 {
+            let dir = Arc::clone(&directory);
+            tasks.spawn(async move {
+                for i in 0..10 {
+                    let entry = dir.get_entry(&format!("cn=user{},dc=test,dc=com", i));
+                    assert!(entry.is_some());
+                }
+            });
+        }
+        
+        // Spawn writers
+        for i in 10..15 {
+            let dir = Arc::clone(&directory);
+            tasks.spawn(async move {
+                let mut entry = LdapEntry::new(format!("cn=user{},dc=test,dc=com", i));
+                entry.add_attribute(
+                    "cn".to_string(),
+                    vec![crate::directory::entry::AttributeValue::String(format!("user{}", i))],
+                    crate::directory::entry::AttributeSyntax::String,
+                );
+                dir.add_entry(entry);
+            });
+        }
+        
+        // Wait for all tasks
+        while let Some(result) = tasks.join_next().await {
+            assert!(result.is_ok());
+        }
+        
+        // Verify all entries exist
+        for i in 0..15 {
+            assert!(directory.entry_exists(&format!("cn=user{},dc=test,dc=com", i)));
+        }
+    }
+
+    #[test]
+    fn test_directory_search_concurrent() {
+        use std::sync::Arc;
+        use std::thread;
+        
+        let schema = YamlSchema::default();
+        let directory = Arc::new(Directory::new("dc=test,dc=com".to_string(), schema));
+        
+        // Add some initial entries
+        for i in 0..100 {
+            let mut entry = LdapEntry::new(format!("cn=user{},dc=test,dc=com", i));
+            entry.add_attribute(
+                "cn".to_string(),
+                vec![crate::directory::entry::AttributeValue::String(format!("user{}", i))],
+                crate::directory::entry::AttributeSyntax::String,
+            );
+            entry.add_attribute(
+                "uid".to_string(),
+                vec![crate::directory::entry::AttributeValue::String(format!("uid{}", i))],
+                crate::directory::entry::AttributeSyntax::String,
+            );
+            if i % 2 == 0 {
+                entry.add_attribute(
+                    "department".to_string(),
+                    vec![crate::directory::entry::AttributeValue::String("engineering".to_string())],
+                    crate::directory::entry::AttributeSyntax::String,
+                );
+            }
+            directory.add_entry(entry);
+        }
+        
+        // Concurrent searches
+        let mut handles = vec![];
+        
+        for _ in 0..10 {
+            let dir = Arc::clone(&directory);
+            let handle = thread::spawn(move || {
+                // Search for all entries
+                let results = dir.search_entries("dc=test,dc=com", SearchScope::WholeSubtree, |_| true);
+                assert_eq!(results.len(), 100);
+                
+                // Search for entries with department
+                let results = dir.search_entries("dc=test,dc=com", SearchScope::WholeSubtree, |entry| {
+                    entry.has_attribute("department")
+                });
+                assert_eq!(results.len(), 50);
+                
+                // Search single level
+                let results = dir.search_entries("dc=test,dc=com", SearchScope::SingleLevel, |_| true);
+                assert_eq!(results.len(), 100);
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
     }
 }
