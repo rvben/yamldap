@@ -383,7 +383,7 @@ fn parse_composite_filters(s: &str) -> crate::Result<Vec<LdapFilter>> {
     let mut depth = 0;
     let mut start = 0;
 
-    for (i, ch) in s.chars().enumerate() {
+    for (i, ch) in s.char_indices() {
         match ch {
             '(' => {
                 if depth == 0 {
@@ -394,7 +394,9 @@ fn parse_composite_filters(s: &str) -> crate::Result<Vec<LdapFilter>> {
             ')' => {
                 depth -= 1;
                 if depth == 0 {
-                    let filter_str = &s[start..=i];
+                    // Find the byte position after ')'
+                    let end = i + ')'.len_utf8();
+                    let filter_str = &s[start..end];
                     filters.push(parse_ldap_filter(filter_str)?);
                 }
             }

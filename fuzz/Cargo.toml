@@ -1,0 +1,35 @@
+[package]
+name = "yamldap-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1.3", features = ["derive"] }
+bytes = "1.7"
+tokio-util = { version = "0.7", features = ["codec"] }
+
+[dependencies.yamldap]
+path = ".."
+
+[[bin]]
+name = "fuzz_ldap_decoder"
+path = "fuzz_targets/fuzz_ldap_decoder.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ldap_filter_parser"
+path = "fuzz_targets/fuzz_ldap_filter_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ldap_structured"
+path = "fuzz_targets/fuzz_ldap_structured.rs"
+test = false
+doc = false
