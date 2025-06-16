@@ -1,3 +1,4 @@
+pub mod ad_compat;
 pub mod bind;
 pub mod filters;
 pub mod operations;
