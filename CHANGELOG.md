@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2025-06-16
+
+### Fixed
+- **OpenLDAP Compatibility**: Search filters with undefined attributes now return `UndefinedAttributeType` error (code 17) instead of silently returning 0 results
+  - Matches OpenLDAP's behavior for better compatibility with existing LDAP client code
+  - Enables exception-based fallback patterns used for Active Directory/OpenLDAP compatibility
+  - Added comprehensive tests for undefined attribute handling
+
+### Changed
+- Search operations now validate all attributes referenced in filters before executing the search
+- Added methods to collect and validate attributes from both schema and existing entries
+
 ## [0.1.0] - 2025-06-14
 
 ### Added

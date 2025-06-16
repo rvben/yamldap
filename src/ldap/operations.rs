@@ -84,6 +84,25 @@ pub fn handle_operation(
                 }
             };
 
+            // Check if filter references undefined attributes
+            let filter_attributes = ldap_filter.get_referenced_attributes();
+            let existing_attributes = directory.get_all_existing_attributes();
+
+            for attr in &filter_attributes {
+                if !existing_attributes.contains(attr) {
+                    responses.push(LdapMessage {
+                        message_id,
+                        protocol_op: LdapProtocolOp::SearchResultDone {
+                            result: LdapResult::error(
+                                LdapResultCode::UndefinedAttributeType,
+                                format!("{}: attribute type undefined", attr),
+                            ),
+                        },
+                    });
+                    return responses;
+                }
+            }
+
             // Convert scope
             let dir_scope = match scope {
                 SearchScope::BaseObject => DirSearchScope::BaseObject,
@@ -917,6 +936,91 @@ mod tests {
                 assert!(value.is_none());
             }
             _ => panic!("Expected ExtendedResponse"),
+        }
+    }
+
+    #[test]
+    fn test_search_with_undefined_attribute() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        // Search with undefined attribute should return UndefinedAttributeType error
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            filter: "(userPrincipalName=test)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+
+        // Should have 1 response: SearchResultDone with error
+        assert_eq!(responses.len(), 1);
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::UndefinedAttributeType);
+                assert!(result
+                    .diagnostic_message
+                    .contains("attribute type undefined"));
+            }
+            _ => panic!("Expected SearchResultDone"),
+        }
+    }
+
+    #[test]
+    fn test_search_with_undefined_attribute_in_complex_filter() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        // AND filter with undefined attribute
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            filter: "(&(uid=user1)(nonExistentAttr=value))".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+
+        // Should have 1 response: SearchResultDone with error
+        assert_eq!(responses.len(), 1);
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::UndefinedAttributeType);
+                assert!(result.diagnostic_message.contains("nonexistentattr"));
+                assert!(result
+                    .diagnostic_message
+                    .contains("attribute type undefined"));
+            }
+            _ => panic!("Expected SearchResultDone"),
+        }
+    }
+
+    #[test]
+    fn test_search_with_valid_attributes_still_works() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        // Search with valid attribute should work
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            filter: "(uid=user1)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+
+        // Should have 2 responses: 1 entry + done
+        assert_eq!(responses.len(), 2);
+
+        match &responses[1].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::Success);
+            }
+            _ => panic!("Expected SearchResultDone"),
         }
     }
 }
