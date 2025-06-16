@@ -96,8 +96,13 @@ impl Server {
                             }
                         };
 
-                        if let Err(e) =
-                            connection::handle_connection(socket, dir_snapshot, auth_handler, ad_compat).await
+                        if let Err(e) = connection::handle_connection(
+                            socket,
+                            dir_snapshot,
+                            auth_handler,
+                            ad_compat,
+                        )
+                        .await
                         {
                             error!("Connection error: {}", e);
                         }

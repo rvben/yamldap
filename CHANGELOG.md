@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2025-06-16
+
+### Added
+- **Active Directory Compatibility Mode**: New `--ad-compat` flag enables seamless compatibility with Active Directory clients
+  - Automatically transforms `objectClass=user` queries to match `inetOrgPerson` entries
+  - Maps `userPrincipalName` searches to `uid` and `mail` attributes
+  - Allows yamldap to serve as a drop-in replacement for AD in testing environments
+  - Enables applications expecting AD-specific schema to work with OpenLDAP-style data
+
+### Changed
+- Search operations now support filter transformations based on compatibility mode
+- Enhanced attribute mapping to handle AD-specific attributes gracefully
+
 ## [0.1.1] - 2025-06-16
 
 ### Fixed

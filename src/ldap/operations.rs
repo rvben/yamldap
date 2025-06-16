@@ -96,7 +96,8 @@ pub fn handle_operation(
 
             // In AD compat mode, some attributes are mapped and shouldn't be considered undefined
             if ad_compat {
-                filter_attributes = super::ad_compat::transform_undefined_attributes(&filter_attributes);
+                filter_attributes =
+                    super::ad_compat::transform_undefined_attributes(&filter_attributes);
             }
 
             for attr in &filter_attributes {
@@ -297,7 +298,11 @@ mod tests {
             vec![AttributeValue::String("user1@example.com".to_string())],
             AttributeSyntax::String,
         );
-        user1.object_classes = vec!["inetOrgPerson".to_string(), "person".to_string(), "top".to_string()];
+        user1.object_classes = vec![
+            "inetOrgPerson".to_string(),
+            "person".to_string(),
+            "top".to_string(),
+        ];
         user1.add_attribute(
             "objectClass".to_string(),
             vec![
@@ -655,7 +660,14 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(message_id, operation, &directory, &auth_handler, true, false);
+        let responses = handle_operation(
+            message_id,
+            operation,
+            &directory,
+            &auth_handler,
+            true,
+            false,
+        );
 
         // All responses should have the same message ID
         for response in responses {
@@ -1067,7 +1079,8 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation.clone(), &directory, &auth_handler, true, false);
+        let responses =
+            handle_operation(1, operation.clone(), &directory, &auth_handler, true, false);
 
         // Should have 1 response: SearchResultDone with success but no entries
         assert_eq!(responses.len(), 1);
@@ -1092,7 +1105,8 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation.clone(), &directory, &auth_handler, true, false);
+        let responses =
+            handle_operation(1, operation.clone(), &directory, &auth_handler, true, false);
 
         // Should have error for undefined attribute
         assert_eq!(responses.len(), 1);
