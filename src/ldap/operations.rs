@@ -4,7 +4,7 @@ use super::protocol::*;
 use crate::directory::{storage::SearchScope as DirSearchScope, AuthHandler, Directory};
 use std::collections::HashMap;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum LdapOperation {
     Bind {
         version: u8,
@@ -38,6 +38,7 @@ pub fn handle_operation(
     directory: &Directory,
     auth_handler: &AuthHandler,
     _is_authenticated: bool,
+    ad_compat: bool,
 ) -> Vec<LdapMessage> {
     match operation {
         LdapOperation::Bind {
@@ -68,7 +69,7 @@ pub fn handle_operation(
             let mut responses = Vec::new();
 
             // Parse the filter
-            let ldap_filter = match parse_ldap_filter(&filter) {
+            let mut ldap_filter = match parse_ldap_filter(&filter) {
                 Ok(f) => f,
                 Err(e) => {
                     responses.push(LdapMessage {
@@ -84,9 +85,19 @@ pub fn handle_operation(
                 }
             };
 
+            // Apply AD compatibility transformations if enabled
+            if ad_compat {
+                ldap_filter = super::ad_compat::transform_filter_for_ad(ldap_filter);
+            }
+
             // Check if filter references undefined attributes
-            let filter_attributes = ldap_filter.get_referenced_attributes();
+            let mut filter_attributes = ldap_filter.get_referenced_attributes();
             let existing_attributes = directory.get_all_existing_attributes();
+
+            // In AD compat mode, some attributes are mapped and shouldn't be considered undefined
+            if ad_compat {
+                filter_attributes = super::ad_compat::transform_undefined_attributes(&filter_attributes);
+            }
 
             for attr in &filter_attributes {
                 if !existing_attributes.contains(attr) {
@@ -249,6 +260,21 @@ mod tests {
         let schema = crate::yaml::YamlSchema::default();
         let directory = Directory::new("dc=example,dc=com".to_string(), schema);
 
+        // Add the ou=users organizational unit
+        let mut ou_users = LdapEntry::new("ou=users,dc=example,dc=com".to_string());
+        ou_users.add_attribute(
+            "ou".to_string(),
+            vec![AttributeValue::String("users".to_string())],
+            AttributeSyntax::String,
+        );
+        ou_users.object_classes = vec!["organizationalUnit".to_string()];
+        ou_users.add_attribute(
+            "objectClass".to_string(),
+            vec![AttributeValue::String("organizationalUnit".to_string())],
+            AttributeSyntax::String,
+        );
+        directory.add_entry(ou_users);
+
         // Add test users
         let mut user1 = LdapEntry::new("cn=user1,ou=users,dc=example,dc=com".to_string());
         user1.add_attribute(
@@ -271,10 +297,11 @@ mod tests {
             vec![AttributeValue::String("user1@example.com".to_string())],
             AttributeSyntax::String,
         );
-        user1.object_classes = vec!["person".to_string(), "top".to_string()];
+        user1.object_classes = vec!["inetOrgPerson".to_string(), "person".to_string(), "top".to_string()];
         user1.add_attribute(
             "objectClass".to_string(),
             vec![
+                AttributeValue::String("inetOrgPerson".to_string()),
                 AttributeValue::String("person".to_string()),
                 AttributeValue::String("top".to_string()),
             ],
@@ -293,10 +320,13 @@ mod tests {
             vec![AttributeValue::String("user2".to_string())],
             AttributeSyntax::String,
         );
-        user2.object_classes = vec!["person".to_string()];
+        user2.object_classes = vec!["inetOrgPerson".to_string(), "person".to_string()];
         user2.add_attribute(
             "objectClass".to_string(),
-            vec![AttributeValue::String("person".to_string())],
+            vec![
+                AttributeValue::String("inetOrgPerson".to_string()),
+                AttributeValue::String("person".to_string()),
+            ],
             AttributeSyntax::String,
         );
         directory.add_entry(user2);
@@ -348,7 +378,7 @@ mod tests {
             auth: BindAuthentication::Simple("password1".to_string()),
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, false);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
 
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
@@ -366,7 +396,7 @@ mod tests {
 
         let operation = LdapOperation::Unbind;
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Unbind should return no responses
         assert_eq!(responses.len(), 0);
@@ -384,7 +414,7 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Should have 2 responses: 1 entry + done
         assert_eq!(responses.len(), 2);
@@ -419,7 +449,7 @@ mod tests {
             attributes: vec!["cn".to_string(), "uid".to_string()],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Should have 3 responses: 2 entries + done
         assert_eq!(responses.len(), 3);
@@ -459,7 +489,7 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Should have 5 responses: 4 entries (2 users + 1 OU + 1 base) + done
         assert_eq!(responses.len(), 5);
@@ -484,7 +514,7 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
@@ -507,7 +537,7 @@ mod tests {
             value: "user1".to_string(),
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
@@ -529,7 +559,7 @@ mod tests {
             value: "user2".to_string(),
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
@@ -551,7 +581,7 @@ mod tests {
             value: "USER1@EXAMPLE.COM".to_string(), // Different case
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
@@ -573,7 +603,7 @@ mod tests {
             value: "value".to_string(),
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
@@ -598,7 +628,7 @@ mod tests {
             value: "value".to_string(),
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
@@ -625,7 +655,7 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(message_id, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(message_id, operation, &directory, &auth_handler, true, false);
 
         // All responses should have the same message ID
         for response in responses {
@@ -645,7 +675,7 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Should find only user1
         assert_eq!(responses.len(), 2); // 1 entry + done
@@ -685,7 +715,7 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, false);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
 
         // Should find 2 responses: SearchResultEntry and SearchResultDone
         assert_eq!(responses.len(), 2);
@@ -712,7 +742,7 @@ mod tests {
             attributes: vec!["uid".to_string(), "cn".to_string()],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Count actual entries (exclude SearchResultDone)
         let entry_count = responses
@@ -749,7 +779,7 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         let entry_count = responses
             .iter()
@@ -782,7 +812,7 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         assert_eq!(responses.len(), 1, "Should only have SearchResultDone");
 
@@ -807,7 +837,7 @@ mod tests {
             attributes: vec!["ou".to_string()],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         let entries: Vec<&str> = responses
             .iter()
@@ -834,7 +864,7 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         let entries: Vec<&str> = responses
             .iter()
@@ -857,7 +887,7 @@ mod tests {
         // Test abandon operation - it should return no responses
         let operation = LdapOperation::Abandon { message_id: 5 };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Abandon operation should return empty response (no response is sent)
         assert_eq!(
@@ -878,7 +908,7 @@ mod tests {
             value: None,
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         assert_eq!(
             responses.len(),
@@ -914,7 +944,7 @@ mod tests {
             value: Some(vec![0x01, 0x02, 0x03]),
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         assert_eq!(
             responses.len(),
@@ -952,7 +982,7 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Should have 1 response: SearchResultDone with error
         assert_eq!(responses.len(), 1);
@@ -981,7 +1011,7 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Should have 1 response: SearchResultDone with error
         assert_eq!(responses.len(), 1);
@@ -1011,12 +1041,73 @@ mod tests {
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, true);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Should have 2 responses: 1 entry + done
         assert_eq!(responses.len(), 2);
 
         match &responses[1].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::Success);
+            }
+            _ => panic!("Expected SearchResultDone"),
+        }
+    }
+
+    #[test]
+    fn test_ad_compat_objectclass_user() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        // Search with objectClass=user should fail without AD compat
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            filter: "(objectClass=user)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation.clone(), &directory, &auth_handler, true, false);
+
+        // Should have 1 response: SearchResultDone with success but no entries
+        assert_eq!(responses.len(), 1);
+
+        // With AD compat enabled, should find person entries
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, true);
+
+        // Should find entries with objectClass=person
+        assert!(responses.len() > 1); // At least one entry + done
+    }
+
+    #[test]
+    fn test_ad_compat_userprincipalname() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        // Search with userPrincipalName should fail without AD compat
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            filter: "(userPrincipalName=user1@example.com)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation.clone(), &directory, &auth_handler, true, false);
+
+        // Should have error for undefined attribute
+        assert_eq!(responses.len(), 1);
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::UndefinedAttributeType);
+            }
+            _ => panic!("Expected SearchResultDone with error"),
+        }
+
+        // With AD compat enabled, should map to uid/mail search
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, true);
+
+        // Should succeed and find user1 by mail
+        match &responses.last().unwrap().protocol_op {
             LdapProtocolOp::SearchResultDone { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
             }

@@ -14,6 +14,7 @@ fn create_test_config(yaml_file: PathBuf, port: u16) -> Config {
         allow_anonymous: true,
         hot_reload: true,
         log_level: tracing::Level::INFO,
+        ad_compat: false,
     }
 }
 
@@ -180,6 +181,7 @@ async fn test_server_bind_error() {
         allow_anonymous: false,
         hot_reload: false,
         log_level: tracing::Level::INFO,
+        ad_compat: false,
     };
 
     let server = Server::new(config).await.unwrap();
@@ -198,6 +200,7 @@ async fn test_server_invalid_yaml() {
         allow_anonymous: false,
         hot_reload: false,
         log_level: tracing::Level::INFO,
+        ad_compat: false,
     };
 
     let result = Server::new(config).await;

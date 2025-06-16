@@ -84,6 +84,7 @@ impl Server {
 
                     let directory = Arc::clone(&self.directory);
                     let auth_handler = Arc::clone(&self.auth_handler);
+                    let ad_compat = self.config.ad_compat;
 
                     tokio::spawn(async move {
                         // Create a read-only snapshot of the directory for this connection
@@ -96,7 +97,7 @@ impl Server {
                         };
 
                         if let Err(e) =
-                            connection::handle_connection(socket, dir_snapshot, auth_handler).await
+                            connection::handle_connection(socket, dir_snapshot, auth_handler, ad_compat).await
                         {
                             error!("Connection error: {}", e);
                         }
@@ -144,6 +145,7 @@ mod tests {
             allow_anonymous: false,
             hot_reload: false,
             log_level: tracing::Level::INFO,
+            ad_compat: false,
         };
 
         let server = Server::new(config).await.unwrap();
@@ -161,6 +163,7 @@ mod tests {
             allow_anonymous: true,
             hot_reload: false,
             log_level: tracing::Level::INFO,
+            ad_compat: false,
         };
 
         let server = Server::new(config).await.unwrap();
@@ -176,6 +179,7 @@ mod tests {
             allow_anonymous: false,
             hot_reload: false,
             log_level: tracing::Level::INFO,
+            ad_compat: false,
         };
 
         let result = Server::new(config).await;
@@ -193,6 +197,7 @@ mod tests {
             allow_anonymous: false,
             hot_reload: true,
             log_level: tracing::Level::INFO,
+            ad_compat: false,
         };
 
         let server = Server::new(config).await.unwrap();
@@ -221,6 +226,7 @@ mod tests {
             allow_anonymous: true,
             hot_reload: false,
             log_level: tracing::Level::INFO,
+            ad_compat: false,
         };
 
         let server = Server::new(config).await.unwrap();

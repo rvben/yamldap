@@ -12,6 +12,7 @@ pub async fn handle_connection(
     socket: TcpStream,
     directory: Arc<Directory>,
     auth_handler: Arc<AuthHandler>,
+    ad_compat: bool,
 ) -> crate::Result<()> {
     let peer_addr = socket.peer_addr()?;
     info!("Handling connection from {}", peer_addr);
@@ -44,6 +45,7 @@ pub async fn handle_connection(
                     &directory,
                     &auth_handler,
                     session.is_bound(),
+                    ad_compat,
                 );
 
                 // Update session state for bind operations
@@ -320,7 +322,7 @@ mod tests {
         let auth = auth_handler.clone();
         tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let _ = handle_connection(socket, dir, auth).await;
+            let _ = handle_connection(socket, dir, auth, false).await;
         });
 
         // Connect as client
@@ -351,7 +353,7 @@ mod tests {
         let auth = auth_handler.clone();
         let handle = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let _ = handle_connection(socket, dir, auth).await;
+            let _ = handle_connection(socket, dir, auth, false).await;
         });
 
         // Connect and immediately close

@@ -38,6 +38,10 @@ pub struct CliArgs {
     /// Set log level: debug, info, warn, error
     #[arg(long, default_value = "info")]
     pub log_level: String,
+
+    /// Enable Active Directory compatibility mode
+    #[arg(long)]
+    pub ad_compat: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +52,7 @@ pub struct Config {
     pub allow_anonymous: bool,
     pub hot_reload: bool,
     pub log_level: tracing::Level,
+    pub ad_compat: bool,
 }
 
 impl Config {
@@ -79,6 +84,7 @@ impl Config {
             allow_anonymous: args.allow_anonymous,
             hot_reload: args.hot_reload,
             log_level,
+            ad_compat: args.ad_compat,
         })
     }
 }
@@ -98,6 +104,7 @@ mod tests {
         assert!(!args.allow_anonymous);
         assert!(!args.hot_reload);
         assert!(!args.verbose);
+        assert!(!args.ad_compat);
         assert_eq!(args.log_level, "info");
     }
 
@@ -140,6 +147,7 @@ mod tests {
             hot_reload: true,
             verbose: false,
             log_level: "debug".to_string(),
+            ad_compat: false,
         };
 
         let config = Config::from_cli_args(args).unwrap();
@@ -165,6 +173,7 @@ mod tests {
             hot_reload: false,
             verbose: false,
             log_level: "info".to_string(),
+            ad_compat: false,
         };
 
         let result = Config::from_cli_args(args);
@@ -198,6 +207,7 @@ mod tests {
                 hot_reload: false,
                 verbose: false,
                 log_level: log_level_str.to_string(),
+                ad_compat: false,
             };
 
             let config = Config::from_cli_args(args).unwrap();
@@ -216,6 +226,7 @@ mod tests {
             hot_reload: false,
             verbose: false,
             log_level: "info".to_string(),
+            ad_compat: false,
         };
 
         let config = Config::from_cli_args(args).unwrap();
@@ -236,6 +247,7 @@ mod tests {
             hot_reload: false,
             verbose: false,
             log_level: "info".to_string(),
+            ad_compat: false,
         };
 
         let config = Config::from_cli_args(args).unwrap();
@@ -251,6 +263,7 @@ mod tests {
             allow_anonymous: true,
             hot_reload: true,
             log_level: tracing::Level::DEBUG,
+            ad_compat: false,
         };
 
         let cloned = config.clone();
@@ -260,5 +273,6 @@ mod tests {
         assert_eq!(cloned.allow_anonymous, config.allow_anonymous);
         assert_eq!(cloned.hot_reload, config.hot_reload);
         assert_eq!(cloned.log_level, config.log_level);
+        assert_eq!(cloned.ad_compat, config.ad_compat);
     }
 }
