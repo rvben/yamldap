@@ -64,6 +64,31 @@ impl From<SchemaConfig> for YamlSchema {
     }
 }
 
+impl YamlSchema {
+    /// Get all known attributes from the schema
+    pub fn get_all_known_attributes(&self) -> std::collections::HashSet<String> {
+        let mut attributes = std::collections::HashSet::new();
+
+        // Add standard LDAP attributes that are always available
+        attributes.insert("objectclass".to_string());
+        attributes.insert("dn".to_string());
+
+        // Add attributes from all object classes
+        for attrs in self.object_classes.values() {
+            for attr in attrs {
+                attributes.insert(attr.to_lowercase());
+            }
+        }
+
+        // Add custom attributes
+        for attr_name in self.custom_attributes.keys() {
+            attributes.insert(attr_name.to_lowercase());
+        }
+
+        attributes
+    }
+}
+
 impl Default for YamlSchema {
     fn default() -> Self {
         let mut object_classes = HashMap::new();

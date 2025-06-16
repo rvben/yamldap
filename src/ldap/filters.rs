@@ -93,6 +93,39 @@ impl LdapFilter {
             LdapFilter::Not(filter) => !filter.matches(entry),
         }
     }
+
+    /// Extract all attribute names referenced in this filter
+    pub fn get_referenced_attributes(&self) -> std::collections::HashSet<String> {
+        let mut attributes = std::collections::HashSet::new();
+        self.collect_attributes(&mut attributes);
+        attributes
+    }
+
+    fn collect_attributes(&self, attributes: &mut std::collections::HashSet<String>) {
+        match self {
+            LdapFilter::Present(attr)
+            | LdapFilter::Equality(attr, _)
+            | LdapFilter::Substring(attr, _)
+            | LdapFilter::GreaterOrEqual(attr, _)
+            | LdapFilter::LessOrEqual(attr, _)
+            | LdapFilter::Approximate(attr, _) => {
+                attributes.insert(attr.to_lowercase());
+            }
+            LdapFilter::Extensible(ext) => {
+                if let Some(attr) = &ext.attribute {
+                    attributes.insert(attr.to_lowercase());
+                }
+            }
+            LdapFilter::And(filters) | LdapFilter::Or(filters) => {
+                for filter in filters {
+                    filter.collect_attributes(attributes);
+                }
+            }
+            LdapFilter::Not(filter) => {
+                filter.collect_attributes(attributes);
+            }
+        }
+    }
 }
 
 impl SubstringFilter {

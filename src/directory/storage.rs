@@ -99,6 +99,24 @@ impl Directory {
     pub fn entry_exists(&self, dn: &str) -> bool {
         self.entries.contains_key(&dn.to_lowercase())
     }
+
+    /// Get all attributes that exist in any entry in the directory
+    pub fn get_all_existing_attributes(&self) -> std::collections::HashSet<String> {
+        let mut attributes = std::collections::HashSet::new();
+
+        // Always include standard attributes
+        attributes.insert("objectclass".to_string());
+        attributes.insert("dn".to_string());
+
+        // Collect attributes from all entries
+        for entry in self.entries.iter() {
+            for attr_name in entry.attributes.keys() {
+                attributes.insert(attr_name.to_lowercase());
+            }
+        }
+
+        attributes
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
