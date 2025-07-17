@@ -90,6 +90,13 @@ docker-push: docker-login docker-buildx
 		-t ghcr.io/rvben/yamldap:latest \
 		--push .
 
+# Push multi-platform image to Docker Hub
+docker-push-dockerhub: docker-login docker-buildx
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make docker-push-dockerhub VERSION=0.1.0"; exit 1; fi
+	docker buildx build --platform linux/amd64,linux/arm64 \
+		-t docker.io/rvben/yamldap:$(VERSION) \
+		-t docker.io/rvben/yamldap:latest \
+		--push .
 
 # Run with Docker
 docker-run:
@@ -107,6 +114,25 @@ docker-compose-registry:
 docker-stop:
 	docker stop yamldap && docker rm yamldap || true
 	docker compose down || true
+
+
+# Deploy secrets to GitHub
+gh-secrets:
+	@if [ ! -f .env ]; then \
+		echo "Error: .env file not found. Copy .env.example to .env and fill in your values."; \
+		exit 1; \
+	fi
+	@echo "Loading environment variables from .env..."
+	@export $$(grep -v '^#' .env | xargs) && \
+		gh secret set DOCKER_USERNAME --body "$$DOCKER_USERNAME" && \
+		echo "✓ Set DOCKER_USERNAME" && \
+		gh secret set DOCKER_PASSWORD --body "$$DOCKER_PASSWORD" && \
+		echo "✓ Set DOCKER_PASSWORD" && \
+		if [ ! -z "$$CRATES_IO_TOKEN" ]; then \
+			gh secret set CRATES_IO_TOKEN --body "$$CRATES_IO_TOKEN" && \
+			echo "✓ Set CRATES_IO_TOKEN"; \
+		fi
+	@echo "GitHub secrets deployed successfully!"
 
 # Run linting
 lint:

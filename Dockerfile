@@ -27,6 +27,11 @@ RUN case "$TARGETPLATFORM" in \
 # Runtime stage - using scratch (empty image)
 FROM scratch
 
+# Link container to GitHub repository
+LABEL org.opencontainers.image.source=https://github.com/rvben/yamldap
+LABEL org.opencontainers.image.description="YamlDAP - A functional LDAP server that serves directory data from YAML files"
+LABEL org.opencontainers.image.licenses=MIT
+
 # Copy only the binary
 COPY --from=builder /yamldap /yamldap
 
