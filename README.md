@@ -97,6 +97,7 @@ entries:
     objectClass: ["top", "person", "inetOrgPerson"]
     uid: "john"
     cn: "John Doe"
+    givenName: "John"
     sn: "Doe"
     mail: "john@example.com"
     userPassword: "secret123"
