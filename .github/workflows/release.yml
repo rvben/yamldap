@@ -24,6 +24,7 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.target }}
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
@@ -31,7 +32,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: yamldap
             asset_name: yamldap-linux-amd64
-          - os: ubuntu-latest
+          - os: [self-hosted, Linux, ARM64]
             target: aarch64-unknown-linux-gnu
             artifact_name: yamldap
             asset_name: yamldap-linux-arm64
@@ -58,18 +59,25 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        # Native arm64 runner uses cargo-zigbuild (pre-installed) instead.
+        if: matrix.target == 'aarch64-unknown-linux-gnu' && runner.arch != 'ARM64'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build
-        run: |
-          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-          fi
-          make build-target TARGET=${{ matrix.target }}
         shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" && "${{ runner.arch }}" == "ARM64" ]]; then
+            # Native arm64 host: cargo-zigbuild targets glibc 2.28 for
+            # wide Linux compat instead of Pi host's newer glibc.
+            cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28
+          else
+            if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+            fi
+            make build-target TARGET=${{ matrix.target }}
+          fi
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
