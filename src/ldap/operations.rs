@@ -1,8 +1,108 @@
 use super::bind::handle_bind_request;
 use super::filters::parse_ldap_filter;
 use super::protocol::*;
-use crate::directory::{storage::SearchScope as DirSearchScope, AuthHandler, Directory};
+use crate::directory::{
+    entry::{AttributeSyntax, AttributeValue, LdapEntry},
+    storage::SearchScope as DirSearchScope,
+    AuthHandler, Directory,
+};
 use std::collections::HashMap;
+
+/// Synthesize the RootDSE entry for a directory.
+///
+/// The RootDSE (Root Directory Specific Entry) is a special entry at DN="" that
+/// LDAP clients — especially Windows ADSI — probe before issuing real searches.
+/// It advertises naming contexts, supported versions, and vendor information so
+/// clients can discover and navigate the directory tree.
+fn build_rootdse_entry(directory: &Directory, ad_compat: bool) -> LdapEntry {
+    let base_dn = &directory.base_dn;
+    let mut entry = LdapEntry::new(String::new());
+
+    entry.object_classes = vec!["top".to_string(), "rootDSE".to_string()];
+    entry.add_attribute(
+        "objectClass".to_string(),
+        vec![
+            AttributeValue::String("top".to_string()),
+            AttributeValue::String("rootDSE".to_string()),
+        ],
+        AttributeSyntax::String,
+    );
+
+    entry.add_attribute(
+        "namingContexts".to_string(),
+        vec![AttributeValue::String(base_dn.clone())],
+        AttributeSyntax::String,
+    );
+
+    entry.add_attribute(
+        "supportedLDAPVersion".to_string(),
+        vec![AttributeValue::String("3".to_string())],
+        AttributeSyntax::String,
+    );
+
+    // Empty list signals to clients that no controls are implemented.
+    entry.add_attribute(
+        "supportedControl".to_string(),
+        vec![],
+        AttributeSyntax::String,
+    );
+
+    entry.add_attribute(
+        "supportedSASLMechanisms".to_string(),
+        vec![],
+        AttributeSyntax::String,
+    );
+
+    entry.add_attribute(
+        "vendorName".to_string(),
+        vec![AttributeValue::String("yamldap".to_string())],
+        AttributeSyntax::String,
+    );
+
+    entry.add_attribute(
+        "vendorVersion".to_string(),
+        vec![AttributeValue::String(
+            env!("CARGO_PKG_VERSION").to_string(),
+        )],
+        AttributeSyntax::String,
+    );
+
+    // A pseudo-value; ADSI may probe the subschema but we don't implement it.
+    entry.add_attribute(
+        "subschemaSubentry".to_string(),
+        vec![AttributeValue::String("cn=schema".to_string())],
+        AttributeSyntax::String,
+    );
+
+    if ad_compat {
+        entry.add_attribute(
+            "defaultNamingContext".to_string(),
+            vec![AttributeValue::String(base_dn.clone())],
+            AttributeSyntax::String,
+        );
+        entry.add_attribute(
+            "rootDomainNamingContext".to_string(),
+            vec![AttributeValue::String(base_dn.clone())],
+            AttributeSyntax::String,
+        );
+        entry.add_attribute(
+            "dnsHostName".to_string(),
+            vec![AttributeValue::String("yamldap.local".to_string())],
+            AttributeSyntax::String,
+        );
+        entry.add_attribute(
+            "serverName".to_string(),
+            vec![AttributeValue::String(format!(
+                "cn=yamldap,cn=Servers,cn=Default-First-Site-Name,\
+                 cn=Sites,cn=Configuration,{}",
+                base_dn
+            ))],
+            AttributeSyntax::String,
+        );
+    }
+
+    entry
+}
 
 #[derive(Debug, Clone)]
 pub enum LdapOperation {
@@ -88,6 +188,58 @@ pub fn handle_operation(
             // Apply AD compatibility transformations if enabled
             if ad_compat {
                 ldap_filter = super::ad_compat::transform_filter_for_ad(ldap_filter);
+            }
+
+            // RootDSE response: an empty base DN with base scope is the standard
+            // RootDSE probe issued by Windows ADSI and other LDAP clients before
+            // any real search. We synthesize a single entry advertising the
+            // directory's naming context and supported capabilities.
+            if base_dn.trim().is_empty() && matches!(scope, SearchScope::BaseObject) {
+                let rootdse = build_rootdse_entry(directory, ad_compat);
+
+                if ldap_filter.matches(&rootdse) {
+                    let mut attrs: HashMap<String, Vec<String>> = HashMap::new();
+
+                    // Determine which attributes to return.
+                    let return_all = attributes.is_empty() || attributes.iter().any(|a| a == "*");
+
+                    if return_all {
+                        for attr in rootdse.attributes.values() {
+                            let values: Vec<String> =
+                                attr.values.iter().map(|v| v.as_string()).collect();
+                            attrs.insert(attr.name.clone(), values);
+                        }
+                    } else if attributes.iter().all(|a| a == "1.1") {
+                        // "1.1" means return DN only — no attributes
+                    } else {
+                        for attr_name in &attributes {
+                            if attr_name == "1.1" {
+                                continue;
+                            }
+                            if let Some(attr) = rootdse.get_attribute(attr_name) {
+                                let values: Vec<String> =
+                                    attr.values.iter().map(|v| v.as_string()).collect();
+                                attrs.insert(attr.name.clone(), values);
+                            }
+                        }
+                    }
+
+                    responses.push(LdapMessage {
+                        message_id,
+                        protocol_op: LdapProtocolOp::SearchResultEntry {
+                            dn: String::new(),
+                            attributes: attrs,
+                        },
+                    });
+                }
+
+                responses.push(LdapMessage {
+                    message_id,
+                    protocol_op: LdapProtocolOp::SearchResultDone {
+                        result: LdapResult::success(),
+                    },
+                });
+                return responses;
             }
 
             // Check if filter references undefined attributes
@@ -1059,6 +1211,311 @@ mod tests {
         assert_eq!(responses.len(), 2);
 
         match &responses[1].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::Success);
+            }
+            _ => panic!("Expected SearchResultDone"),
+        }
+    }
+
+    // ── RootDSE tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_rootdse_returns_naming_contexts() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        let operation = LdapOperation::Search {
+            base_dn: String::new(),
+            scope: SearchScope::BaseObject,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+
+        // Should be 1 entry + done
+        assert_eq!(responses.len(), 2);
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { dn, attributes } => {
+                assert_eq!(dn, "", "RootDSE DN must be empty string");
+                let naming = attributes
+                    .get("namingContexts")
+                    .expect("namingContexts must be present");
+                assert_eq!(naming, &vec!["dc=example,dc=com".to_string()]);
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+
+        match &responses[1].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::Success);
+            }
+            _ => panic!("Expected SearchResultDone"),
+        }
+    }
+
+    #[test]
+    fn test_rootdse_returns_supported_ldap_version_3() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        let operation = LdapOperation::Search {
+            base_dn: String::new(),
+            scope: SearchScope::BaseObject,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { attributes, .. } => {
+                let versions = attributes
+                    .get("supportedLDAPVersion")
+                    .expect("supportedLDAPVersion must be present");
+                assert!(
+                    versions.contains(&"3".to_string()),
+                    "supportedLDAPVersion must include '3'"
+                );
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
+    fn test_rootdse_returns_vendor_name() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        let operation = LdapOperation::Search {
+            base_dn: String::new(),
+            scope: SearchScope::BaseObject,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { attributes, .. } => {
+                let vendor = attributes
+                    .get("vendorName")
+                    .expect("vendorName must be present");
+                assert_eq!(vendor, &vec!["yamldap".to_string()]);
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
+    fn test_rootdse_respects_requested_attributes() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        let operation = LdapOperation::Search {
+            base_dn: String::new(),
+            scope: SearchScope::BaseObject,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec!["namingContexts".to_string()],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { attributes, .. } => {
+                assert!(
+                    attributes.contains_key("namingContexts"),
+                    "namingContexts must be returned when requested"
+                );
+                assert!(
+                    !attributes.contains_key("vendorName"),
+                    "vendorName must not be returned when not requested"
+                );
+                assert!(
+                    !attributes.contains_key("supportedLDAPVersion"),
+                    "supportedLDAPVersion must not be returned when not requested"
+                );
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
+    fn test_rootdse_ad_compat_adds_default_naming_context() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        let operation = LdapOperation::Search {
+            base_dn: String::new(),
+            scope: SearchScope::BaseObject,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, true);
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { attributes, .. } => {
+                let default_nc = attributes
+                    .get("defaultNamingContext")
+                    .expect("defaultNamingContext must be present in AD compat mode");
+                assert_eq!(default_nc, &vec!["dc=example,dc=com".to_string()]);
+
+                let root_nc = attributes
+                    .get("rootDomainNamingContext")
+                    .expect("rootDomainNamingContext must be present in AD compat mode");
+                assert_eq!(root_nc, &vec!["dc=example,dc=com".to_string()]);
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
+    fn test_rootdse_ad_compat_disabled_omits_ad_attributes() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        let operation = LdapOperation::Search {
+            base_dn: String::new(),
+            scope: SearchScope::BaseObject,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { attributes, .. } => {
+                assert!(
+                    !attributes.contains_key("defaultNamingContext"),
+                    "defaultNamingContext must not appear without AD compat"
+                );
+                assert!(
+                    !attributes.contains_key("rootDomainNamingContext"),
+                    "rootDomainNamingContext must not appear without AD compat"
+                );
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
+    fn test_rootdse_filter_present_object_class() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        let operation = LdapOperation::Search {
+            base_dn: String::new(),
+            scope: SearchScope::BaseObject,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+
+        let entry_count = responses
+            .iter()
+            .filter(|r| matches!(r.protocol_op, LdapProtocolOp::SearchResultEntry { .. }))
+            .count();
+
+        assert_eq!(
+            entry_count, 1,
+            "(objectClass=*) must match the RootDSE entry"
+        );
+    }
+
+    #[test]
+    fn test_rootdse_filter_specific_objectclass_matches() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        let operation = LdapOperation::Search {
+            base_dn: String::new(),
+            scope: SearchScope::BaseObject,
+            filter: "(objectClass=rootDSE)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+
+        let entry_count = responses
+            .iter()
+            .filter(|r| matches!(r.protocol_op, LdapProtocolOp::SearchResultEntry { .. }))
+            .count();
+
+        assert_eq!(
+            entry_count, 1,
+            "(objectClass=rootDSE) must match the synthetic RootDSE entry"
+        );
+    }
+
+    #[test]
+    fn test_rootdse_filter_non_matching_returns_zero_entries() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        let operation = LdapOperation::Search {
+            base_dn: String::new(),
+            scope: SearchScope::BaseObject,
+            filter: "(cn=does-not-exist)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+
+        // No entries, but SearchResultDone with success
+        assert_eq!(responses.len(), 1);
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(
+                    result.result_code,
+                    LdapResultCode::Success,
+                    "Non-matching RootDSE filter must still return success"
+                );
+            }
+            _ => panic!("Expected SearchResultDone"),
+        }
+    }
+
+    #[test]
+    fn test_subtree_search_with_empty_base_is_not_treated_as_rootdse() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        // Scope is WholeSubtree, not BaseObject — must NOT trigger RootDSE synthesis.
+        let operation = LdapOperation::Search {
+            base_dn: String::new(),
+            scope: SearchScope::WholeSubtree,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+
+        // Should fall through to normal search: no entries because no entry has DN="",
+        // but we must get SearchResultDone with success (not a RootDSE entry).
+        let entry_dns: Vec<&str> = responses
+            .iter()
+            .filter_map(|r| match &r.protocol_op {
+                LdapProtocolOp::SearchResultEntry { dn, .. } => Some(dn.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        // Entries may come back (subtree from "" would include all), but critically
+        // none of them should have an empty DN (which would indicate RootDSE synthesis).
+        for dn in &entry_dns {
+            assert!(
+                !dn.is_empty(),
+                "RootDSE synthesis must not fire for WholeSubtree scope"
+            );
+        }
+
+        // Result must be success
+        let done = responses.last().unwrap();
+        match &done.protocol_op {
             LdapProtocolOp::SearchResultDone { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
             }

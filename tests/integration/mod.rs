@@ -2,4 +2,5 @@ mod basic_test;
 mod complex_filters_test;
 mod concurrent_test;
 mod enhanced_filters_test;
+mod rootdse_test;
 mod undefined_attributes_test;
