@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [0.1.3](https://github.com/rvben/yamldap/compare/v0.1.2...v0.1.3) - 2026-05-12
+
+### Added
+
+- **ldap**: synthesize RootDSE entry for empty-base baseObject searches ([ff056e9](https://github.com/rvben/yamldap/commit/ff056e9f76c8be6587e3e5fc820b5d383053732b))
+- Add Docker Hub publishing to yamldap release workflow ([b163291](https://github.com/rvben/yamldap/commit/b163291809ce9a70bf9f1ce2b7b704ca58f95a10))
+
 ## [0.1.2] - 2025-06-16
 
 ### Added
