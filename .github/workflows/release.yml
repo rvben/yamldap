@@ -24,14 +24,15 @@ jobs:
     name: Build ${{ matrix.target }}
     timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
+            target: x86_64-unknown-linux-gnu
             artifact_name: yamldap
             asset_name: yamldap-linux-amd64
           - os: [self-hosted, Linux, ARM64]
-            target: aarch64-unknown-linux-musl
+            target: aarch64-unknown-linux-gnu
             artifact_name: yamldap
             asset_name: yamldap-linux-arm64
           - os: windows-latest
@@ -55,12 +56,6 @@ jobs:
         with:
           toolchain: stable
           target: ${{ matrix.target }}
-
-      - name: Install static Linux build tools
-        if: endsWith(matrix.target, '-unknown-linux-musl')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
 
       - name: Build
         run: make build-target TARGET=${{ matrix.target }}
@@ -157,9 +152,41 @@ jobs:
           echo "DRY RUN: Would publish to crates.io"
           make publish-crate-dry
 
+  test-container:
+    name: Smoke test release container
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download Linux binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: yamldap-linux-*
+          path: artifacts
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build test image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.release
+          platforms: linux/amd64
+          load: true
+          tags: yamldap:release-smoke-test
+          build-args: |
+            VERSION=smoke-test
+            REVISION=${{ github.sha }}
+
+      - name: Run test image
+        run: docker run --rm yamldap:release-smoke-test --version
+
   publish-docker-hub:
     name: Publish Docker Hub image
-    needs: build
+    needs: [build, test-container]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -222,7 +249,7 @@ jobs:
 
   publish-ghcr:
     name: Publish GHCR image
-    needs: build
+    needs: [build, test-container]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -289,7 +316,7 @@ jobs:
 
   summary:
     name: Release Summary
-    needs: [release, publish-crate, publish-docker-hub, publish-ghcr]
+    needs: [release, publish-crate, test-container, publish-docker-hub, publish-ghcr]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -307,6 +334,7 @@ jobs:
             echo "2. Push the tag to trigger this workflow"
           elif [[ "${{ needs.release.result }}" == "success" && \
                   "${{ needs.publish-crate.result }}" == "success" && \
+                  "${{ needs.test-container.result }}" == "success" && \
                   "${{ needs.publish-docker-hub.result }}" == "success" && \
                   "${{ needs.publish-ghcr.result }}" == "success" ]]; then
             echo "## 🎉 Release Complete!"
@@ -320,6 +348,7 @@ jobs:
             echo ""
             echo "- GitHub Release: ${{ needs.release.result }}"
             echo "- crates.io: ${{ needs.publish-crate.result }}"
+            echo "- Container smoke test: ${{ needs.test-container.result }}"
             echo "- Docker Hub: ${{ needs.publish-docker-hub.result }}"
             echo "- GHCR: ${{ needs.publish-ghcr.result }}"
             exit 1

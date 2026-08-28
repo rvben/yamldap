@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM scratch
+FROM gcr.io/distroless/cc-debian13@sha256:9b615fff20e1a4fad29c2b30562580b212c7dd5e2225236735cca0070ed11c78
 
 ARG TARGETARCH
 ARG VERSION
