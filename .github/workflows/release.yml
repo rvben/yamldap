@@ -59,7 +59,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Install cross-compilation tools
-        # Native arm64 runner uses cargo-zigbuild (pre-installed) instead.
+        # Native arm64 runner uses its system linker.
         if: matrix.target == 'aarch64-unknown-linux-gnu' && runner.arch != 'ARM64'
         run: |
           sudo apt-get update
@@ -68,16 +68,10 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" && "${{ runner.arch }}" == "ARM64" ]]; then
-            # Native arm64 host: cargo-zigbuild targets glibc 2.28 for
-            # wide Linux compat instead of Pi host's newer glibc.
-            cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28
-          else
-            if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-            fi
-            make build-target TARGET=${{ matrix.target }}
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" && "${{ runner.arch }}" != "ARM64" ]]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           fi
+          make build-target TARGET=${{ matrix.target }}
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -121,7 +115,7 @@ jobs:
 
       - name: Create GitHub Release
         if: ${{ inputs.dry_run != true }}
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           body_path: release-notes.md
           files: release-assets/*
@@ -178,7 +172,7 @@ jobs:
           else
             VERSION=latest
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
