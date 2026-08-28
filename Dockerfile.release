@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+
+FROM scratch
+
+ARG TARGETARCH
+ARG VERSION
+ARG REVISION
+
+LABEL org.opencontainers.image.source="https://github.com/rvben/yamldap" \
+      org.opencontainers.image.description="YAML-backed LDAP server" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION"
+
+COPY --chmod=755 artifacts/yamldap-linux-${TARGETARCH}/yamldap /yamldap
+
+EXPOSE 389
+
+ENTRYPOINT ["/yamldap"]

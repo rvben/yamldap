@@ -83,7 +83,7 @@ docker-login:
 	@echo "$$GITHUB_TOKEN" | docker login ghcr.io -u $$GITHUB_ACTOR --password-stdin
 
 # Push multi-platform image to GitHub Container Registry
-docker-push: docker-login docker-buildx
+docker-push: docker-login docker-setup
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make docker-push VERSION=0.1.0"; exit 1; fi
 	docker buildx build --platform linux/amd64,linux/arm64 \
 		-t ghcr.io/rvben/yamldap:$(VERSION) \
@@ -91,7 +91,7 @@ docker-push: docker-login docker-buildx
 		--push .
 
 # Push multi-platform image to Docker Hub
-docker-push-dockerhub: docker-login docker-buildx
+docker-push-dockerhub: docker-setup
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make docker-push-dockerhub VERSION=0.1.0"; exit 1; fi
 	docker buildx build --platform linux/amd64,linux/arm64 \
 		-t docker.io/rvben/yamldap:$(VERSION) \
