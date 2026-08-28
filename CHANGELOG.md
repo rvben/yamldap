@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4](https://github.com/rvben/yamldap/compare/v0.1.3...v0.1.4) - 2026-08-28
+
+### Security
+
+- Require authentication for search and compare operations when anonymous access is disabled.
+- Prevent password attributes from being returned, filtered, or compared, including attribute options.
+- Reject empty-password named binds, malformed anonymous authentication, and stale authorization after failed rebinds.
+- Bound LDAP message sizes and filter nesting, validate BER lengths and tags strictly, and escape BER filter values safely.
+
+### Fixed
+
+- Apply hot-reloaded directory data to existing connections without blocking the async runtime.
+- Honor search size limits, time limits, `typesOnly`, and LDAP attribute selectors.
+- Apply the `--base-dn` override during initial loading and hot reloads.
+- Encode LDAP result codes as `ENUMERATED` and enforce DN-component boundaries in scoped searches.
+- Preserve anonymous RootDSE discovery while enforcing authentication for directory searches.
+
+### Changed
+
+- Replace dormant nested integration fixtures with active, race-free `ldap3` client tests.
+- Update audited dependencies to patched versions and resolve all strict Clippy findings.
+
 
 ## [0.1.3](https://github.com/rvben/yamldap/compare/v0.1.2...v0.1.3) - 2026-05-12
 
