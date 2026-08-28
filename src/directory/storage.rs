@@ -3,6 +3,14 @@ use super::index::{AttributeIndex, ObjectClassIndex};
 use crate::yaml::{YamlDirectory, YamlSchema};
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+#[derive(Debug)]
+pub struct SearchEntriesResult {
+    pub entries: Vec<LdapEntry>,
+    pub size_limit_exceeded: bool,
+    pub time_limit_exceeded: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct Directory {
@@ -69,10 +77,33 @@ impl Directory {
     where
         F: Fn(&LdapEntry) -> bool,
     {
+        self.search_entries_with_limits(base_dn, scope, filter, None, None)
+            .entries
+    }
+
+    pub fn search_entries_with_limits<F>(
+        &self,
+        base_dn: &str,
+        scope: SearchScope,
+        filter: F,
+        size_limit: Option<usize>,
+        time_limit: Option<Duration>,
+    ) -> SearchEntriesResult
+    where
+        F: Fn(&LdapEntry) -> bool,
+    {
         let base_dn_lower = base_dn.to_lowercase();
         let mut results = Vec::new();
+        let started_at = Instant::now();
+        let mut size_limit_exceeded = false;
+        let mut time_limit_exceeded = false;
 
         for entry in self.entries.iter() {
+            if time_limit.is_some_and(|limit| started_at.elapsed() >= limit) {
+                time_limit_exceeded = true;
+                break;
+            }
+
             let entry_dn_lower = entry.key().to_lowercase();
 
             // Check if entry is in scope
@@ -89,11 +120,19 @@ impl Directory {
             };
 
             if in_scope && filter(&entry) {
+                if size_limit.is_some_and(|limit| results.len() >= limit) {
+                    size_limit_exceeded = true;
+                    break;
+                }
                 results.push(entry.clone());
             }
         }
 
-        results
+        SearchEntriesResult {
+            entries: results,
+            size_limit_exceeded,
+            time_limit_exceeded,
+        }
     }
 
     pub fn entry_exists(&self, dn: &str) -> bool {
@@ -136,7 +175,11 @@ fn is_direct_child(child_dn: &str, parent_dn: &str) -> bool {
         return false;
     }
 
-    // Remove trailing comma if present
+    if !prefix.ends_with(',') {
+        return false;
+    }
+
+    // Remove the DN separator.
     let prefix = prefix.trim_end_matches(',');
 
     // Check if there's only one RDN component
@@ -144,7 +187,9 @@ fn is_direct_child(child_dn: &str, parent_dn: &str) -> bool {
 }
 
 fn is_descendant(child_dn: &str, parent_dn: &str) -> bool {
-    child_dn.ends_with(parent_dn) && child_dn.len() > parent_dn.len()
+    child_dn
+        .strip_suffix(parent_dn)
+        .is_some_and(|prefix| prefix.ends_with(','))
 }
 
 #[cfg(test)]
@@ -167,6 +212,12 @@ mod tests {
             "ou=users,dc=example,dc=com",
             "ou=users,dc=example,dc=com"
         ));
+
+        // A suffix inside the preceding RDN value is not a DN boundary.
+        assert!(!is_direct_child(
+            "uid=john,description=ou=users,dc=example,dc=com",
+            "ou=users,dc=example,dc=com"
+        ));
     }
 
     #[test]
@@ -182,6 +233,12 @@ mod tests {
         ));
 
         assert!(!is_descendant("dc=example,dc=com", "dc=example,dc=com"));
+
+        // A suffix inside the preceding RDN value is not a DN boundary.
+        assert!(!is_descendant(
+            "uid=john,description=dc=example,dc=com",
+            "dc=example,dc=com"
+        ));
     }
 
     #[test]
@@ -340,6 +397,24 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].dn, "cn=user1,dc=test,dc=com");
+    }
+
+    #[test]
+    fn test_directory_search_reports_expired_time_limit() {
+        let directory = Directory::new("dc=test,dc=com".to_string(), YamlSchema::default());
+        directory.add_entry(LdapEntry::new("dc=test,dc=com".to_string()));
+
+        let result = directory.search_entries_with_limits(
+            "dc=test,dc=com",
+            SearchScope::WholeSubtree,
+            |_| true,
+            None,
+            Some(Duration::ZERO),
+        );
+
+        assert!(result.entries.is_empty());
+        assert!(result.time_limit_exceeded);
+        assert!(!result.size_limit_exceeded);
     }
 
     #[test]

@@ -16,9 +16,7 @@ pub struct Server {
 
 impl Server {
     pub async fn new(config: Config) -> crate::Result<Self> {
-        // Load directory from YAML
-        let (yaml_dir, schema) = yaml::parse_directory_file(&config.yaml_file).await?;
-        let directory = Directory::from_yaml(yaml_dir, schema);
+        let directory = load_directory(&config.yaml_file, config.base_dn.as_deref()).await?;
 
         info!("Loaded directory with base DN: {}", directory.base_dn);
 
@@ -32,39 +30,42 @@ impl Server {
     }
 
     pub async fn run(self) -> crate::Result<()> {
+        let listener = TcpListener::bind(&self.config.bind_address).await?;
+        self.run_with_listener(listener).await
+    }
+
+    /// Run the server using an already-bound listener.
+    ///
+    /// This is useful for embedding and allows tests to bind port zero without a race.
+    pub async fn run_with_listener(self, listener: TcpListener) -> crate::Result<()> {
         // Set up hot-reload if enabled
-        let reload_rx = if self.config.hot_reload {
+        let (_watcher_guard, reload_rx) = if self.config.hot_reload {
             info!("Hot-reload enabled, watching YAML file for changes");
-            let (_watcher, rx) = YamlWatcher::new(&self.config.yaml_file)?;
-            Some(rx)
+            let (watcher, rx) = YamlWatcher::new(&self.config.yaml_file)?;
+            (Some(watcher), Some(rx))
         } else {
-            None
+            (None, None)
         };
 
         // Start hot-reload handler if enabled
         if let Some(mut rx) = reload_rx {
             let yaml_path = self.config.yaml_file.clone();
+            let base_dn_override = self.config.base_dn.clone();
             let directory = Arc::clone(&self.directory);
 
             tokio::spawn(async move {
                 while rx.changed().await.is_ok() {
                     info!("Reloading YAML directory file...");
-                    match yaml::parse_directory_file(&yaml_path).await {
-                        Ok((yaml_dir, schema)) => {
-                            let new_directory = Directory::from_yaml(yaml_dir, schema);
-                            match directory.write() {
-                                Ok(mut dir) => {
-                                    *dir = new_directory;
-                                    info!("Successfully reloaded directory");
-                                }
-                                Err(e) => {
-                                    error!(
-                                        "Failed to acquire write lock for directory reload: {}",
-                                        e
-                                    );
-                                }
+                    match load_directory(&yaml_path, base_dn_override.as_deref()).await {
+                        Ok(new_directory) => match directory.write() {
+                            Ok(mut dir) => {
+                                *dir = new_directory;
+                                info!("Successfully reloaded directory");
                             }
-                        }
+                            Err(e) => {
+                                error!("Failed to acquire write lock for directory reload: {}", e);
+                            }
+                        },
                         Err(e) => {
                             error!("Failed to reload YAML file: {}", e);
                         }
@@ -73,9 +74,7 @@ impl Server {
             });
         }
 
-        let listener = TcpListener::bind(&self.config.bind_address).await?;
-
-        info!("LDAP server listening on {}", self.config.bind_address);
+        info!("LDAP server listening on {}", listener.local_addr()?);
 
         loop {
             match listener.accept().await {
@@ -87,18 +86,9 @@ impl Server {
                     let ad_compat = self.config.ad_compat;
 
                     tokio::spawn(async move {
-                        // Create a read-only snapshot of the directory for this connection
-                        let dir_snapshot = match directory.read() {
-                            Ok(dir) => Arc::new(dir.clone()),
-                            Err(e) => {
-                                error!("Failed to read directory: {}", e);
-                                return;
-                            }
-                        };
-
                         if let Err(e) = connection::handle_connection(
                             socket,
-                            dir_snapshot,
+                            directory,
                             auth_handler,
                             ad_compat,
                         )
@@ -114,6 +104,22 @@ impl Server {
             }
         }
     }
+}
+
+async fn load_directory(
+    yaml_path: &std::path::Path,
+    base_dn_override: Option<&str>,
+) -> crate::Result<Directory> {
+    let (mut yaml_directory, schema) = yaml::parse_directory_file(yaml_path).await?;
+    if let Some(base_dn) = base_dn_override {
+        if base_dn.trim().is_empty() {
+            return Err(crate::YamlLdapError::Config(
+                "Base DN override cannot be empty".to_string(),
+            ));
+        }
+        yaml_directory.directory.base_dn = base_dn.to_string();
+    }
+    Ok(Directory::from_yaml(yaml_directory, schema))
 }
 
 #[cfg(test)]
@@ -173,6 +179,27 @@ mod tests {
 
         let server = Server::new(config).await.unwrap();
         assert!(server.auth_handler.is_anonymous_allowed());
+    }
+
+    #[tokio::test]
+    async fn test_server_applies_base_dn_override() {
+        let yaml_file = create_test_yaml_file();
+        let config = Config {
+            yaml_file: yaml_file.path().to_path_buf(),
+            bind_address: "127.0.0.1:389".parse().unwrap(),
+            base_dn: Some("dc=override,dc=example".to_string()),
+            allow_anonymous: false,
+            hot_reload: false,
+            log_level: tracing::Level::INFO,
+            ad_compat: false,
+        };
+
+        let server = Server::new(config).await.unwrap();
+
+        assert_eq!(
+            server.directory.read().unwrap().base_dn,
+            "dc=override,dc=example"
+        );
     }
 
     #[tokio::test]

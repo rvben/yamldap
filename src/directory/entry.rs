@@ -374,7 +374,7 @@ mod tests {
             object_class: vec!["top".to_string()],
             attributes: [(
                 "score".to_string(),
-                serde_yaml::Value::Number(serde_yaml::Number::from(3.14)),
+                serde_yaml::Value::Number(serde_yaml::Number::from(1.25)),
             )]
             .into_iter()
             .collect(),
@@ -384,7 +384,7 @@ mod tests {
 
         let score_attr = entry.get_attribute("score").unwrap();
         match &score_attr.values[0] {
-            AttributeValue::String(s) => assert_eq!(s, "3.14"),
+            AttributeValue::String(s) => assert_eq!(s, "1.25"),
             _ => panic!("Expected string value for float"),
         }
     }
@@ -531,11 +531,10 @@ mod tests {
     #[test]
     fn test_ldap_entry_with_very_long_dn() {
         // Test with a very long DN (common in deep organizational structures)
-        let long_dn = format!(
-            "cn=user,ou=level1,ou=level2,ou=level3,ou=level4,ou=level5,\
+        let long_dn = "cn=user,ou=level1,ou=level2,ou=level3,ou=level4,ou=level5,\
              ou=level6,ou=level7,ou=level8,ou=level9,ou=level10,\
              dc=very-long-domain-name-example,dc=com"
-        );
+            .to_string();
         let entry = LdapEntry::new(long_dn.clone());
         assert_eq!(entry.dn, long_dn);
         assert!(entry.matches_dn(&long_dn));

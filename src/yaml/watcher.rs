@@ -1,28 +1,49 @@
 use crate::Result;
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, Event, EventKind, PollWatcher, RecursiveMode, Watcher};
 use std::path::Path;
-use std::sync::mpsc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tracing::{error, info};
 
 pub struct YamlWatcher {
-    _watcher: RecommendedWatcher,
-    rx: mpsc::Receiver<notify::Result<Event>>,
+    _watcher: PollWatcher,
 }
 
 impl YamlWatcher {
     pub fn new(path: &Path) -> Result<(Self, watch::Receiver<()>)> {
-        let (tx, rx) = mpsc::channel();
-        let (reload_tx, reload_rx) = watch::channel(());
+        let metadata = std::fs::metadata(path).map_err(|error| {
+            crate::YamlLdapError::Io(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "Failed to access watched YAML file {}: {error}",
+                    path.display()
+                ),
+            ))
+        })?;
+        if !metadata.is_file() {
+            return Err(crate::YamlLdapError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Watched YAML path is not a file: {}", path.display()),
+            )));
+        }
 
-        let mut watcher = RecommendedWatcher::new(
-            move |res: notify::Result<Event>| {
-                if let Err(e) = tx.send(res) {
-                    error!("Failed to send file watch event: {}", e);
+        let (reload_tx, reload_rx) = watch::channel(());
+        let watched_path = path.to_path_buf();
+
+        let mut watcher = PollWatcher::new(
+            move |res: notify::Result<Event>| match res {
+                Ok(event) if Self::event_is_relevant(&event, &watched_path) => {
+                    info!("YAML file changed, triggering reload: {:?}", event.paths);
+                    if let Err(error) = reload_tx.send(()) {
+                        error!("Failed to send reload signal: {error}");
+                    }
                 }
+                Ok(_) => {}
+                Err(error) => error!("File watch error: {error}"),
             },
-            Config::default().with_poll_interval(Duration::from_secs(2)),
+            Config::default()
+                .with_poll_interval(Duration::from_millis(500))
+                .with_compare_contents(true),
         )
         .map_err(|e| {
             crate::YamlLdapError::Io(std::io::Error::other(format!(
@@ -31,10 +52,8 @@ impl YamlWatcher {
             )))
         })?;
 
-        // Watch the parent directory for better compatibility
-        let parent_dir = path.parent().unwrap_or(Path::new("."));
         watcher
-            .watch(parent_dir, RecursiveMode::NonRecursive)
+            .watch(path, RecursiveMode::NonRecursive)
             .map_err(|e| {
                 crate::YamlLdapError::Io(std::io::Error::other(format!(
                     "Failed to watch directory: {}",
@@ -42,51 +61,15 @@ impl YamlWatcher {
                 )))
             })?;
 
-        let watched_path = path.to_path_buf();
-        let reload_tx_clone = reload_tx.clone();
-
-        // Spawn a task to handle file events
-        tokio::spawn(async move {
-            let yaml_watcher = YamlWatcher {
-                _watcher: watcher,
-                rx,
-            };
-            yaml_watcher.run(watched_path, reload_tx_clone).await;
-        });
-
-        Ok((
-            YamlWatcher {
-                _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
-                rx: mpsc::channel().1,
-            },
-            reload_rx,
-        ))
+        Ok((YamlWatcher { _watcher: watcher }, reload_rx))
     }
 
-    async fn run(self, watched_path: std::path::PathBuf, reload_tx: watch::Sender<()>) {
-        loop {
-            match self.rx.recv() {
-                Ok(Ok(event)) => {
-                    if self.is_relevant_event(&event, &watched_path) {
-                        info!("YAML file changed, triggering reload: {:?}", event.paths);
-                        if let Err(e) = reload_tx.send(()) {
-                            error!("Failed to send reload signal: {}", e);
-                            break;
-                        }
-                    }
-                }
-                Ok(Err(e)) => {
-                    error!("File watch error: {}", e);
-                }
-                Err(e) => {
-                    error!("File watcher channel error: {}", e);
-                    break;
-                }
-            }
-        }
-    }
-
+    #[cfg(test)]
     fn is_relevant_event(&self, event: &Event, watched_path: &Path) -> bool {
+        Self::event_is_relevant(event, watched_path)
+    }
+
+    fn event_is_relevant(event: &Event, watched_path: &Path) -> bool {
         // Check if the event is for our YAML file
         let is_our_file = event.paths.iter().any(|p| p == watched_path);
 
@@ -107,8 +90,7 @@ mod tests {
     #[test]
     fn test_is_relevant_event_modify() {
         let watcher = YamlWatcher {
-            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
-            rx: mpsc::channel().1,
+            _watcher: PollWatcher::new(|_| {}, Config::default()).unwrap(),
         };
 
         let path = Path::new("/tmp/test.yaml");
@@ -124,8 +106,7 @@ mod tests {
     #[test]
     fn test_is_relevant_event_create() {
         let watcher = YamlWatcher {
-            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
-            rx: mpsc::channel().1,
+            _watcher: PollWatcher::new(|_| {}, Config::default()).unwrap(),
         };
 
         let path = Path::new("/tmp/test.yaml");
@@ -141,8 +122,7 @@ mod tests {
     #[test]
     fn test_is_relevant_event_wrong_file() {
         let watcher = YamlWatcher {
-            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
-            rx: mpsc::channel().1,
+            _watcher: PollWatcher::new(|_| {}, Config::default()).unwrap(),
         };
 
         let watched_path = Path::new("/tmp/test.yaml");
@@ -159,8 +139,7 @@ mod tests {
     #[test]
     fn test_is_relevant_event_wrong_kind() {
         let watcher = YamlWatcher {
-            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
-            rx: mpsc::channel().1,
+            _watcher: PollWatcher::new(|_| {}, Config::default()).unwrap(),
         };
 
         let path = Path::new("/tmp/test.yaml");
@@ -187,9 +166,7 @@ mod tests {
         assert!(rx.has_changed().is_ok());
     }
 
-    // Slow test - commented out for regular runs
-    // #[tokio::test]
-    #[allow(dead_code)]
+    #[tokio::test]
     async fn test_yaml_watcher_file_change() {
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file.as_file(), "test: data").unwrap();
@@ -197,19 +174,14 @@ mod tests {
 
         let (_watcher, mut rx) = YamlWatcher::new(temp_file.path()).unwrap();
 
-        // Clear initial notification
-        let _ = rx.changed().await;
-
         // Modify the file
         writeln!(temp_file.as_file(), "test: modified").unwrap();
         temp_file.flush().unwrap();
 
-        // Wait a bit for the file system event
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // We might or might not receive a change notification depending on the file system
-        // Just check that we can still try to receive
-        let _ = rx.has_changed();
+        tokio::time::timeout(Duration::from_secs(5), rx.changed())
+            .await
+            .expect("file watcher did not report the change")
+            .expect("file watcher channel closed");
     }
 
     #[test]
@@ -221,8 +193,7 @@ mod tests {
     #[test]
     fn test_is_relevant_event_multiple_paths() {
         let watcher = YamlWatcher {
-            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
-            rx: mpsc::channel().1,
+            _watcher: PollWatcher::new(|_| {}, Config::default()).unwrap(),
         };
 
         let watched_path = Path::new("/tmp/test.yaml");
@@ -240,8 +211,7 @@ mod tests {
     #[test]
     fn test_is_relevant_event_delete() {
         let watcher = YamlWatcher {
-            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
-            rx: mpsc::channel().1,
+            _watcher: PollWatcher::new(|_| {}, Config::default()).unwrap(),
         };
 
         let path = Path::new("/tmp/test.yaml");
@@ -258,8 +228,7 @@ mod tests {
     #[test]
     fn test_is_relevant_event_empty_paths() {
         let watcher = YamlWatcher {
-            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
-            rx: mpsc::channel().1,
+            _watcher: PollWatcher::new(|_| {}, Config::default()).unwrap(),
         };
 
         let path = Path::new("/tmp/test.yaml");
@@ -275,8 +244,7 @@ mod tests {
     #[test]
     fn test_is_relevant_event_specific_modify_kinds() {
         let watcher = YamlWatcher {
-            _watcher: RecommendedWatcher::new(|_| {}, Config::default()).unwrap(),
-            rx: mpsc::channel().1,
+            _watcher: PollWatcher::new(|_| {}, Config::default()).unwrap(),
         };
 
         let path = Path::new("/tmp/test.yaml");

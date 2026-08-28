@@ -22,7 +22,7 @@ entries:
 #[test]
 fn test_cli_help() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "yamldap", "--", "--help"])
+        .args(["run", "--bin", "yamldap", "--", "--help"])
         .output()
         .expect("Failed to execute process");
 
@@ -36,7 +36,7 @@ fn test_cli_help() {
 #[test]
 fn test_cli_version() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "yamldap", "--", "--version"])
+        .args(["run", "--bin", "yamldap", "--", "--version"])
         .output()
         .expect("Failed to execute process");
 
@@ -48,7 +48,7 @@ fn test_cli_version() {
 #[test]
 fn test_cli_missing_file() {
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--bin",
             "yamldap",
@@ -70,7 +70,7 @@ fn test_cli_invalid_port() {
     let yaml_path = create_test_yaml(&temp_dir);
 
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--bin",
             "yamldap",
@@ -95,7 +95,7 @@ fn test_cli_log_levels() {
         "debug", "info", "warn", "error", "DEBUG", "INFO", "WARN", "ERROR",
     ] {
         let output = Command::new("cargo")
-            .args(&[
+            .args([
                 "run",
                 "--bin",
                 "yamldap",
@@ -116,7 +116,7 @@ fn test_cli_log_levels() {
 #[test]
 fn test_cli_verbose_flag() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "yamldap", "--", "--verbose", "--help"])
+        .args(["run", "--bin", "yamldap", "--", "--verbose", "--help"])
         .output()
         .expect("Failed to execute process");
 
@@ -128,7 +128,7 @@ fn test_cli_all_arguments() {
     // We don't need the yaml file for this test
     // Just test that help output shows all arguments
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "yamldap", "--", "--help"])
+        .args(["run", "--bin", "yamldap", "--", "--help"])
         .output()
         .expect("Failed to execute process");
 

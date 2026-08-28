@@ -148,7 +148,7 @@ async fn test_server_multiple_connections() {
     let mut handles = vec![];
 
     for i in 0..10 {
-        let addr = config.bind_address.clone();
+        let addr = config.bind_address;
         let handle = tokio::spawn(async move {
             let stream = TcpStream::connect(&addr).await.unwrap();
             // Keep connection open briefly

@@ -3,14 +3,14 @@ use crate::ldap::protocol::{LdapMessage, LdapProtocolOp};
 use crate::ldap::{handle_operation, LdapOperation, SimpleLdapCodec};
 use crate::server::session::LdapSession;
 use futures::{SinkExt, StreamExt};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info};
 
 pub async fn handle_connection(
     socket: TcpStream,
-    directory: Arc<Directory>,
+    directory: Arc<RwLock<Directory>>,
     auth_handler: Arc<AuthHandler>,
     ad_compat: bool,
 ) -> crate::Result<()> {
@@ -38,15 +38,28 @@ pub async fn handle_connection(
                     }
                 };
 
+                // RFC 4511 bind processing discards the previous authentication state,
+                // regardless of whether the new bind succeeds.
+                if matches!(message.protocol_op, LdapProtocolOp::BindRequest { .. }) {
+                    session.unbind();
+                }
+
                 // Handle the operation
-                let responses = handle_operation(
-                    message.message_id,
-                    operation,
-                    &directory,
-                    &auth_handler,
-                    session.is_bound(),
-                    ad_compat,
-                );
+                let responses = {
+                    let directory = directory.read().map_err(|error| {
+                        crate::YamlLdapError::Directory(format!(
+                            "Failed to read directory: {error}"
+                        ))
+                    })?;
+                    handle_operation(
+                        message.message_id,
+                        operation,
+                        &directory,
+                        &auth_handler,
+                        session.is_bound(),
+                        ad_compat,
+                    )
+                };
 
                 // Update session state for bind operations
                 if let LdapProtocolOp::BindRequest { ref dn, .. } = message.protocol_op {
@@ -102,12 +115,18 @@ fn protocol_to_operation(msg: &LdapMessage) -> Option<LdapOperation> {
         LdapProtocolOp::SearchRequest {
             base_dn,
             scope,
+            deref_aliases: _,
+            size_limit,
+            time_limit,
+            types_only,
             filter,
             attributes,
-            ..
         } => Some(LdapOperation::Search {
             base_dn: base_dn.clone(),
             scope: *scope,
+            size_limit: *size_limit,
+            time_limit: *time_limit,
+            types_only: *types_only,
             filter: filter.clone(),
             attributes: attributes.clone(),
         }),
@@ -140,7 +159,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    fn create_test_directory() -> Arc<Directory> {
+    fn create_test_directory() -> Arc<RwLock<Directory>> {
         let schema = YamlSchema::default();
         let directory = Directory::new("dc=test,dc=com".to_string(), schema);
 
@@ -158,7 +177,7 @@ mod tests {
         );
         directory.add_entry(entry);
 
-        Arc::new(directory)
+        Arc::new(RwLock::new(directory))
     }
 
     #[test]
@@ -221,11 +240,17 @@ mod tests {
             LdapOperation::Search {
                 base_dn,
                 scope,
+                size_limit,
+                time_limit,
+                types_only,
                 filter,
                 attributes,
             } => {
                 assert_eq!(base_dn, "dc=test,dc=com");
                 assert_eq!(scope, SearchScope::WholeSubtree);
+                assert_eq!(size_limit, 0);
+                assert_eq!(time_limit, 0);
+                assert!(!types_only);
                 assert_eq!(filter, "(objectClass=*)");
                 assert_eq!(attributes, vec!["cn", "mail"]);
             }

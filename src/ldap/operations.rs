@@ -7,6 +7,10 @@ use crate::directory::{
     AuthHandler, Directory,
 };
 use std::collections::HashMap;
+use std::time::Duration;
+
+const MAX_SEARCH_RESULTS: usize = 10_000;
+const PROTECTED_ATTRIBUTES: &[&str] = &["userpassword"];
 
 /// Synthesize the RootDSE entry for a directory.
 ///
@@ -115,6 +119,9 @@ pub enum LdapOperation {
     Search {
         base_dn: String,
         scope: SearchScope,
+        size_limit: u32,
+        time_limit: u32,
+        types_only: bool,
         filter: String,
         attributes: Vec<String>,
     },
@@ -137,9 +144,43 @@ pub fn handle_operation(
     operation: LdapOperation,
     directory: &Directory,
     auth_handler: &AuthHandler,
-    _is_authenticated: bool,
+    is_authenticated: bool,
     ad_compat: bool,
 ) -> Vec<LdapMessage> {
+    let is_rootdse_search = matches!(
+        &operation,
+        LdapOperation::Search { base_dn, scope, .. }
+            if base_dn.trim().is_empty() && matches!(scope, SearchScope::BaseObject)
+    );
+
+    if !is_authenticated && !auth_handler.is_anonymous_allowed() && !is_rootdse_search {
+        match &operation {
+            LdapOperation::Search { .. } => {
+                return vec![LdapMessage {
+                    message_id,
+                    protocol_op: LdapProtocolOp::SearchResultDone {
+                        result: LdapResult::error(
+                            LdapResultCode::InsufficientAccessRights,
+                            "Authentication is required".to_string(),
+                        ),
+                    },
+                }];
+            }
+            LdapOperation::Compare { .. } => {
+                return vec![LdapMessage {
+                    message_id,
+                    protocol_op: LdapProtocolOp::CompareResponse {
+                        result: LdapResult::error(
+                            LdapResultCode::InsufficientAccessRights,
+                            "Authentication is required".to_string(),
+                        ),
+                    },
+                }];
+            }
+            _ => {}
+        }
+    }
+
     match operation {
         LdapOperation::Bind {
             version: _,
@@ -163,6 +204,9 @@ pub fn handle_operation(
         LdapOperation::Search {
             base_dn,
             scope,
+            size_limit,
+            time_limit,
+            types_only,
             filter,
             attributes,
         } => {
@@ -205,8 +249,11 @@ pub fn handle_operation(
 
                     if return_all {
                         for attr in rootdse.attributes.values() {
-                            let values: Vec<String> =
-                                attr.values.iter().map(|v| v.as_string()).collect();
+                            let values: Vec<String> = if types_only {
+                                Vec::new()
+                            } else {
+                                attr.values.iter().map(|v| v.as_string()).collect()
+                            };
                             attrs.insert(attr.name.clone(), values);
                         }
                     } else if attributes.iter().all(|a| a == "1.1") {
@@ -217,8 +264,11 @@ pub fn handle_operation(
                                 continue;
                             }
                             if let Some(attr) = rootdse.get_attribute(attr_name) {
-                                let values: Vec<String> =
-                                    attr.values.iter().map(|v| v.as_string()).collect();
+                                let values: Vec<String> = if types_only {
+                                    Vec::new()
+                                } else {
+                                    attr.values.iter().map(|v| v.as_string()).collect()
+                                };
                                 attrs.insert(attr.name.clone(), values);
                             }
                         }
@@ -252,6 +302,22 @@ pub fn handle_operation(
                     super::ad_compat::transform_undefined_attributes(&filter_attributes);
             }
 
+            if filter_attributes
+                .iter()
+                .any(|attribute| is_protected_attribute(attribute))
+            {
+                responses.push(LdapMessage {
+                    message_id,
+                    protocol_op: LdapProtocolOp::SearchResultDone {
+                        result: LdapResult::error(
+                            LdapResultCode::InsufficientAccessRights,
+                            "Filtering on protected attributes is not permitted".to_string(),
+                        ),
+                    },
+                });
+                return responses;
+            }
+
             for attr in &filter_attributes {
                 if !existing_attributes.contains(attr) {
                     responses.push(LdapMessage {
@@ -274,25 +340,50 @@ pub fn handle_operation(
                 SearchScope::WholeSubtree => DirSearchScope::WholeSubtree,
             };
 
-            // Perform search
-            let entries =
-                directory.search_entries(&base_dn, dir_scope, |entry| ldap_filter.matches(entry));
+            let requested_limit = usize::try_from(size_limit).unwrap_or(usize::MAX);
+            let effective_limit = if requested_limit == 0 {
+                MAX_SEARCH_RESULTS
+            } else {
+                requested_limit.min(MAX_SEARCH_RESULTS)
+            };
+            let time_limit = (time_limit != 0).then(|| Duration::from_secs(time_limit.into()));
+
+            // Perform a bounded search. The server-side cap applies even when the client
+            // requests no limit so one request cannot materialize an unbounded response.
+            let search_result = directory.search_entries_with_limits(
+                &base_dn,
+                dir_scope,
+                |entry| ldap_filter.matches(entry),
+                Some(effective_limit),
+                time_limit,
+            );
 
             // Return search results
-            for entry in entries {
+            for entry in search_result.entries {
                 let mut attrs = HashMap::new();
 
                 // If specific attributes requested, filter them
-                let attr_names: Vec<String> = if attributes.is_empty() {
+                let requests_all_attributes =
+                    attributes.is_empty() || attributes.iter().any(|name| name == "*");
+                let suppress_all_attributes = attributes.len() == 1 && attributes[0] == "1.1";
+                let attr_names: Vec<String> = if suppress_all_attributes {
+                    Vec::new()
+                } else if requests_all_attributes {
                     entry.attributes.keys().cloned().collect()
                 } else {
                     attributes.clone()
                 };
 
                 for attr_name in attr_names {
+                    if is_protected_attribute(&attr_name) {
+                        continue;
+                    }
                     if let Some(attr) = entry.get_attribute(&attr_name) {
-                        let values: Vec<String> =
-                            attr.values.iter().map(|v| v.as_string()).collect();
+                        let values: Vec<String> = if types_only {
+                            Vec::new()
+                        } else {
+                            attr.values.iter().map(|v| v.as_string()).collect()
+                        };
                         attrs.insert(attr.name.clone(), values);
                     }
                 }
@@ -306,12 +397,24 @@ pub fn handle_operation(
                 });
             }
 
+            let result = if search_result.time_limit_exceeded {
+                LdapResult::error(
+                    LdapResultCode::TimeLimitExceeded,
+                    "Search time limit exceeded".to_string(),
+                )
+            } else if search_result.size_limit_exceeded {
+                LdapResult::error(
+                    LdapResultCode::SizeLimitExceeded,
+                    "Search size limit exceeded".to_string(),
+                )
+            } else {
+                LdapResult::success()
+            };
+
             // Send SearchResultDone
             responses.push(LdapMessage {
                 message_id,
-                protocol_op: LdapProtocolOp::SearchResultDone {
-                    result: LdapResult::success(),
-                },
+                protocol_op: LdapProtocolOp::SearchResultDone { result },
             });
 
             responses
@@ -322,7 +425,12 @@ pub fn handle_operation(
             attribute,
             value,
         } => {
-            let result = if let Some(entry) = directory.get_entry(&dn) {
+            let result = if is_protected_attribute(&attribute) {
+                LdapResult::error(
+                    LdapResultCode::InsufficientAccessRights,
+                    "Comparing protected attributes is not permitted".to_string(),
+                )
+            } else if let Some(entry) = directory.get_entry(&dn) {
                 if let Some(attr) = entry.get_attribute(&attribute) {
                     let matches = attr
                         .values
@@ -402,6 +510,15 @@ pub fn handle_operation(
             }]
         }
     }
+}
+
+fn is_protected_attribute(attribute: &str) -> bool {
+    let base_name = attribute
+        .split_once(';')
+        .map_or(attribute, |(name, _)| name);
+    PROTECTED_ATTRIBUTES
+        .iter()
+        .any(|protected| base_name.eq_ignore_ascii_case(protected))
 }
 
 #[cfg(test)]
@@ -535,7 +652,7 @@ mod tests {
             auth: BindAuthentication::Simple("password1".to_string()),
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         assert_eq!(responses.len(), 1);
         match &responses[0].protocol_op {
@@ -567,6 +684,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
@@ -602,6 +722,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "ou=users,dc=example,dc=com".to_string(),
             scope: SearchScope::SingleLevel,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=person)".to_string(),
             attributes: vec!["cn".to_string(), "uid".to_string()],
         };
@@ -642,6 +765,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(), // Get all entries
             attributes: vec![],
         };
@@ -667,6 +793,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "invalid filter".to_string(), // No parentheses at all
             attributes: vec![],
         };
@@ -808,6 +937,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
@@ -835,6 +967,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(uid=user1)".to_string(), // Simple filter since complex ones aren't parsed
             attributes: vec![],
         };
@@ -875,11 +1010,14 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=test,dc=com".to_string(), // lowercase search
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(cn=user)".to_string(), // lowercase filter
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Should find 2 responses: SearchResultEntry and SearchResultDone
         assert_eq!(responses.len(), 2);
@@ -902,6 +1040,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "ou=users,dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(uid=user1)".to_string(),
             attributes: vec!["uid".to_string(), "cn".to_string()],
         };
@@ -939,6 +1080,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
@@ -972,6 +1116,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(uid=nonexistent)".to_string(),
             attributes: vec![],
         };
@@ -997,6 +1144,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::SingleLevel,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec!["ou".to_string()],
         };
@@ -1024,6 +1174,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(&(objectClass=person)(uid=user1))".to_string(),
             attributes: vec![],
         };
@@ -1142,6 +1295,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(userPrincipalName=test)".to_string(),
             attributes: vec![],
         };
@@ -1171,6 +1327,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(&(uid=user1)(nonExistentAttr=value))".to_string(),
             attributes: vec![],
         };
@@ -1201,6 +1360,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(uid=user1)".to_string(),
             attributes: vec![],
         };
@@ -1228,6 +1390,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: String::new(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
@@ -1264,6 +1429,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: String::new(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
@@ -1292,6 +1460,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: String::new(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
@@ -1317,6 +1488,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: String::new(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec!["namingContexts".to_string()],
         };
@@ -1350,6 +1524,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: String::new(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
@@ -1380,6 +1557,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: String::new(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
@@ -1409,6 +1589,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: String::new(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
@@ -1434,6 +1617,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: String::new(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=rootDSE)".to_string(),
             attributes: vec![],
         };
@@ -1459,6 +1645,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: String::new(),
             scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(cn=does-not-exist)".to_string(),
             attributes: vec![],
         };
@@ -1488,11 +1677,14 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: String::new(),
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=*)".to_string(),
             attributes: vec![],
         };
 
-        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
 
         // Should fall through to normal search: no entries because no entry has DN="",
         // but we must get SearchResultDone with success (not a RootDSE entry).
@@ -1532,6 +1724,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(objectClass=user)".to_string(),
             attributes: vec![],
         };
@@ -1558,6 +1753,9 @@ mod tests {
         let operation = LdapOperation::Search {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
             filter: "(userPrincipalName=user1@example.com)".to_string(),
             attributes: vec![],
         };
@@ -1583,6 +1781,162 @@ mod tests {
                 assert_eq!(result.result_code, LdapResultCode::Success);
             }
             _ => panic!("Expected SearchResultDone"),
+        }
+    }
+
+    #[test]
+    fn test_search_requires_authentication_when_anonymous_access_is_disabled() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+
+        assert_eq!(responses.len(), 1);
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::InsufficientAccessRights);
+            }
+            _ => panic!("Expected SearchResultDone"),
+        }
+    }
+
+    #[test]
+    fn test_search_never_returns_password_attributes() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        let operation = LdapOperation::Search {
+            base_dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
+            scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec!["*".to_string(), "userPassword".to_string()],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { attributes, .. } => {
+                assert!(attributes
+                    .keys()
+                    .all(|name| !name.eq_ignore_ascii_case("userPassword")));
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
+    fn test_search_honors_size_limit() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        let operation = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            size_limit: 1,
+            time_limit: 0,
+            types_only: false,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec!["cn".to_string()],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
+
+        assert_eq!(responses.len(), 2);
+        match &responses[1].protocol_op {
+            LdapProtocolOp::SearchResultDone { result } => {
+                assert_eq!(result.result_code, LdapResultCode::SizeLimitExceeded);
+            }
+            _ => panic!("Expected SearchResultDone"),
+        }
+    }
+
+    #[test]
+    fn test_search_honors_types_only() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        let operation = LdapOperation::Search {
+            base_dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
+            scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: true,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec!["cn".to_string()],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { attributes, .. } => {
+                assert_eq!(attributes.get("cn"), Some(&Vec::new()));
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
+    fn test_protected_attributes_cannot_be_filtered_or_compared() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        let search = LdapOperation::Search {
+            base_dn: "dc=example,dc=com".to_string(),
+            scope: SearchScope::WholeSubtree,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
+            filter: "(userPassword;binary=password1)".to_string(),
+            attributes: vec![],
+        };
+        let compare = LdapOperation::Compare {
+            dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
+            attribute: "userPassword;binary".to_string(),
+            value: "password1".to_string(),
+        };
+
+        for responses in [
+            handle_operation(1, search, &directory, &auth_handler, true, false),
+            handle_operation(2, compare, &directory, &auth_handler, true, false),
+        ] {
+            let result = match &responses[0].protocol_op {
+                LdapProtocolOp::SearchResultDone { result }
+                | LdapProtocolOp::CompareResponse { result } => result,
+                _ => panic!("Expected an access-denied result"),
+            };
+            assert_eq!(result.result_code, LdapResultCode::InsufficientAccessRights);
+        }
+    }
+
+    #[test]
+    fn test_no_attributes_selector_does_not_override_explicit_attributes() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+        let operation = LdapOperation::Search {
+            base_dn: "cn=user1,ou=users,dc=example,dc=com".to_string(),
+            scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec!["1.1".to_string(), "cn".to_string()],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, true, false);
+
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { attributes, .. } => {
+                assert!(attributes.contains_key("cn"));
+            }
+            _ => panic!("Expected SearchResultEntry"),
         }
     }
 }

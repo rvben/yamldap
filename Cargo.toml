@@ -17,7 +17,7 @@ exclude = ["/.github", "/assets/*.png", "/tests", "*.sh", "*.py", "/coverage"]
 # Async runtime and networking
 tokio = { version = "1.40", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
-bytes = "1.7"
+bytes = "1.11.1"
 futures = "0.3"
 
 # LDAP protocol and ASN.1 encoding
@@ -44,7 +44,7 @@ rand = "0.8"
 anyhow = "1.0"
 thiserror = "1.0"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 # File watching and utilities
 notify = "6.1"

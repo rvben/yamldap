@@ -19,6 +19,8 @@ const LDAP_COMPARE_RESPONSE: u8 = 0x6f;
 const LDAP_ABANDON_REQUEST: u8 = 0x50;
 const LDAP_EXTENDED_REQUEST: u8 = 0x77;
 const LDAP_EXTENDED_RESPONSE: u8 = 0x78;
+const MAX_LDAP_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+const MAX_FILTER_DEPTH: usize = 64;
 
 pub struct SimpleLdapCodec;
 
@@ -149,7 +151,23 @@ impl SimpleLdapCodec {
         }
     }
 
+    fn write_enumerated(buf: &mut BytesMut, value: u8) {
+        buf.put_u8(0x0A);
+        buf.put_u8(1);
+        buf.put_u8(value);
+    }
+
     fn read_filter(cursor: &mut Cursor<&[u8]>) -> io::Result<String> {
+        Self::read_filter_with_depth(cursor, 0)
+    }
+
+    fn read_filter_with_depth(cursor: &mut Cursor<&[u8]>, depth: usize) -> io::Result<String> {
+        if depth > MAX_FILTER_DEPTH {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LDAP filter nesting limit exceeded",
+            ));
+        }
         if cursor.remaining() < 1 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -159,6 +177,16 @@ impl SimpleLdapCodec {
 
         let tag = cursor.get_u8();
         let length = Self::read_length(cursor)?;
+        let end_pos = cursor
+            .position()
+            .checked_add(length as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Filter length overflow"))?;
+        if end_pos > cursor.position() + cursor.remaining() as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Filter length exceeds the enclosing message",
+            ));
+        }
 
         // LDAP Filter tags:
         // 0xA0 - AND
@@ -172,44 +200,46 @@ impl SimpleLdapCodec {
         // 0xA8 - Approximate Match
         // 0xA9 - Extensible Match
 
-        match tag {
+        let filter = match tag {
             0xA0 => {
                 // AND filter
-                let _end_pos = cursor.position() + length as u64;
                 let mut filters = Vec::new();
-                while cursor.position() < _end_pos {
-                    filters.push(Self::read_filter(cursor)?);
+                while cursor.position() < end_pos {
+                    filters.push(Self::read_filter_with_depth(cursor, depth + 1)?);
                 }
                 Ok(format!("(&{})", filters.join("")))
             }
             0xA1 => {
                 // OR filter
-                let _end_pos = cursor.position() + length as u64;
                 let mut filters = Vec::new();
-                while cursor.position() < _end_pos {
-                    filters.push(Self::read_filter(cursor)?);
+                while cursor.position() < end_pos {
+                    filters.push(Self::read_filter_with_depth(cursor, depth + 1)?);
                 }
                 Ok(format!("(|{})", filters.join("")))
             }
             0xA2 => {
                 // NOT filter
-                let filter = Self::read_filter(cursor)?;
+                let filter = Self::read_filter_with_depth(cursor, depth + 1)?;
+                if cursor.position() != end_pos {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "NOT filter must contain exactly one component",
+                    ));
+                }
                 Ok(format!("(!{})", filter))
             }
             0xA3 => {
                 // Equality Match: (attr=value)
-                let _end_pos = cursor.position() + length as u64;
                 let attr = Self::read_string(cursor)?;
                 let value = Self::read_string(cursor)?;
-                Ok(format!("({}={})", attr, value))
+                Ok(format!("({}={})", attr, escape_filter_value(&value)))
             }
             0xA4 => {
                 // Substring filter: (attr=*value*)
-                let _end_pos = cursor.position() + length as u64;
                 let attr = Self::read_string(cursor)?;
 
                 // Read substring components
-                if cursor.position() < _end_pos
+                if cursor.position() < end_pos
                     && cursor.get_ref()[cursor.position() as usize] == 0x30
                 {
                     cursor.get_u8(); // SEQUENCE tag
@@ -219,7 +249,7 @@ impl SimpleLdapCodec {
                     let mut has_initial = false;
                     let mut has_final = false;
 
-                    while cursor.position() < _end_pos {
+                    while cursor.position() < end_pos {
                         let sub_tag = cursor.get_u8();
                         let sub_len = Self::read_length(cursor)?;
                         if cursor.remaining() < sub_len {
@@ -237,6 +267,7 @@ impl SimpleLdapCodec {
                         let value = String::from_utf8(bytes).map_err(|_| {
                             io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
                         })?;
+                        let value = escape_filter_value(&value);
 
                         match sub_tag {
                             0x80 => {
@@ -275,13 +306,13 @@ impl SimpleLdapCodec {
                 // Greater or Equal: (attr>=value)
                 let attr = Self::read_string(cursor)?;
                 let value = Self::read_string(cursor)?;
-                Ok(format!("({}>={})", attr, value))
+                Ok(format!("({}>={})", attr, escape_filter_value(&value)))
             }
             0xA6 => {
                 // Less or Equal: (attr<=value)
                 let attr = Self::read_string(cursor)?;
                 let value = Self::read_string(cursor)?;
-                Ok(format!("({}<={})", attr, value))
+                Ok(format!("({}<={})", attr, escape_filter_value(&value)))
             }
             0x87 => {
                 // Present: (attr=*)
@@ -303,14 +334,12 @@ impl SimpleLdapCodec {
             }
             0xA8 => {
                 // Approximate Match: (attr~=value)
-                let _end_pos = cursor.position() + length as u64;
                 let attr = Self::read_string(cursor)?;
                 let value = Self::read_string(cursor)?;
-                Ok(format!("({}~={})", attr, value))
+                Ok(format!("({}~={})", attr, escape_filter_value(&value)))
             }
             0xA9 => {
                 // Extensible Match
-                let end_pos = cursor.position() + length as u64;
                 let mut matching_rule = None;
                 let mut attr_type = None;
                 let mut match_value = String::new();
@@ -374,6 +403,12 @@ impl SimpleLdapCodec {
                         }
                         _ => {
                             // Skip unknown tags
+                            if cursor.remaining() < len {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "Extensible filter component exceeds message",
+                                ));
+                            }
                             cursor.advance(len);
                         }
                     }
@@ -392,17 +427,40 @@ impl SimpleLdapCodec {
                     filter.push_str(&rule);
                 }
                 filter.push_str(":=");
-                filter.push_str(&match_value);
+                filter.push_str(&escape_filter_value(&match_value));
                 filter.push(')');
                 Ok(filter)
             }
-            _ => {
-                // Unknown filter type, skip it
-                cursor.set_position(cursor.position() + length as u64);
-                Ok("(objectClass=*)".to_string()) // Default fallback
-            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unsupported LDAP filter tag: 0x{tag:02x}"),
+            )),
+        }?;
+
+        if cursor.position() != end_pos {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LDAP filter component length mismatch",
+            ));
+        }
+
+        Ok(filter)
+    }
+}
+
+fn escape_filter_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\0' => escaped.push_str("\\00"),
+            '(' => escaped.push_str("\\28"),
+            ')' => escaped.push_str("\\29"),
+            '*' => escaped.push_str("\\2a"),
+            '\\' => escaped.push_str("\\5c"),
+            _ => escaped.push(character),
         }
     }
+    escaped
 }
 
 impl Decoder for SimpleLdapCodec {
@@ -410,8 +468,8 @@ impl Decoder for SimpleLdapCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        // Fast path: check minimum size
-        if src.len() < 5 {
+        // Two bytes are enough to validate the outer tag and length form.
+        if src.len() < 2 {
             return Ok(None);
         }
 
@@ -429,6 +487,12 @@ impl Decoder for SimpleLdapCodec {
             (src[1] as usize, 2)
         } else {
             let num_octets = (src[1] & 0x7f) as usize;
+            if num_octets == 0 || num_octets > 4 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid LDAP message length encoding",
+                ));
+            }
             if src.len() < 2 + num_octets {
                 return Ok(None);
             }
@@ -440,7 +504,19 @@ impl Decoder for SimpleLdapCodec {
             (length, 2 + num_octets)
         };
 
-        let total_len = header_len + msg_length;
+        if msg_length > MAX_LDAP_MESSAGE_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "LDAP message exceeds the {} byte limit",
+                    MAX_LDAP_MESSAGE_SIZE
+                ),
+            ));
+        }
+
+        let total_len = header_len.checked_add(msg_length).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "LDAP message length overflow")
+        })?;
         if src.len() < total_len {
             return Ok(None); // Need more data
         }
@@ -453,6 +529,12 @@ impl Decoder for SimpleLdapCodec {
         let message_id = Self::read_integer(&mut cursor)?;
 
         // Read operation tag
+        if !cursor.has_remaining() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "LDAP message is missing an operation",
+            ));
+        }
         let op_tag = cursor.get_u8();
 
         debug!(
@@ -472,7 +554,13 @@ impl Decoder for SimpleLdapCodec {
                 let dn = Self::read_string(&mut cursor)?;
 
                 // Read authentication choice
-                let auth = if cursor.remaining() > 0 {
+                if !cursor.has_remaining() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "Bind request is missing authentication",
+                    ));
+                }
+                let auth = {
                     let auth_tag = cursor.get_u8();
                     if auth_tag == 0x80 {
                         // Simple authentication
@@ -494,10 +582,11 @@ impl Decoder for SimpleLdapCodec {
                         })?;
                         BindAuthentication::Simple(password)
                     } else {
-                        BindAuthentication::Anonymous
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Unsupported bind authentication tag: 0x{auth_tag:02x}"),
+                        ));
                     }
-                } else {
-                    BindAuthentication::Anonymous
                 };
 
                 LdapProtocolOp::BindRequest {
@@ -532,7 +621,12 @@ impl Decoder for SimpleLdapCodec {
                     0 => SearchScope::BaseObject,
                     1 => SearchScope::SingleLevel,
                     2 => SearchScope::WholeSubtree,
-                    _ => SearchScope::WholeSubtree, // Default to subtree
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Invalid search scope",
+                        ));
+                    }
                 };
 
                 // Read derefAliases (ENUMERATED)
@@ -549,7 +643,19 @@ impl Decoder for SimpleLdapCodec {
                         "Invalid derefAliases",
                     ));
                 }
-                let _deref_value = cursor.get_u8(); // We'll use NeverDerefAliases for now
+                let deref_value = cursor.get_u8();
+                let deref_aliases = match deref_value {
+                    0 => DerefAliases::NeverDerefAliases,
+                    1 => DerefAliases::DerefInSearching,
+                    2 => DerefAliases::DerefFindingBaseObj,
+                    3 => DerefAliases::DerefAlways,
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Invalid derefAliases value",
+                        ));
+                    }
+                };
 
                 // Read sizeLimit (INTEGER)
                 let size_limit = Self::read_integer(&mut cursor)?;
@@ -593,7 +699,7 @@ impl Decoder for SimpleLdapCodec {
                 LdapProtocolOp::SearchRequest {
                     base_dn,
                     scope,
-                    deref_aliases: DerefAliases::NeverDerefAliases,
+                    deref_aliases,
                     size_limit,
                     time_limit,
                     types_only,
@@ -752,7 +858,7 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
                 let mut bind_content = BytesMut::new();
 
                 // Write result code
-                Self::write_integer(&mut bind_content, result.result_code as u32);
+                Self::write_enumerated(&mut bind_content, result.result_code as u8);
 
                 // Write matched DN
                 Self::write_string(&mut bind_content, &result.matched_dn);
@@ -815,7 +921,7 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
                 let mut done_content = BytesMut::new();
 
                 // Write result code
-                Self::write_integer(&mut done_content, result.result_code as u32);
+                Self::write_enumerated(&mut done_content, result.result_code as u8);
 
                 // Write matched DN
                 Self::write_string(&mut done_content, &result.matched_dn);
@@ -833,7 +939,7 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
                 let mut response_content = BytesMut::new();
 
                 // Write result code
-                Self::write_integer(&mut response_content, result.result_code as u32);
+                Self::write_enumerated(&mut response_content, result.result_code as u8);
 
                 // Write matched DN
                 Self::write_string(&mut response_content, &result.matched_dn);
@@ -855,7 +961,7 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
                 let mut response_content = BytesMut::new();
 
                 // Write result code
-                Self::write_integer(&mut response_content, result.result_code as u32);
+                Self::write_enumerated(&mut response_content, result.result_code as u8);
 
                 // Write matched DN
                 Self::write_string(&mut response_content, &result.matched_dn);
@@ -1215,6 +1321,23 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_bind_requires_authentication_choice() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::from(
+            &[
+                0x30, 0x09, // LDAPMessage sequence
+                0x02, 0x01, 0x01, // message ID
+                0x60, 0x04, // BindRequest
+                0x02, 0x01, 0x03, // LDAP version 3
+                0x04, 0x00, // empty DN, but no authentication choice
+            ][..],
+        );
+
+        let error = codec.decode(&mut buf).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
     fn test_decode_compare_request() {
         let mut codec = SimpleLdapCodec;
         let mut buf = BytesMut::new();
@@ -1409,9 +1532,7 @@ mod tests {
         buf.put_u8(0xFF); // Long form with 127 octets (way too many)
 
         let result = codec.decode(&mut buf);
-        // This will actually return Ok(None) because we don't have 127 bytes for the length
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none()); // Not enough data
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1428,6 +1549,72 @@ mod tests {
         let result = codec.decode(&mut buf);
         assert!(result.is_ok()); // Should return None (not enough data)
         assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_decode_rejects_message_over_configured_limit() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::from(&b"\x30\x84\x02\x00\x00\x00"[..]);
+
+        let error = codec.decode(&mut buf).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn test_ber_equality_filter_escapes_literal_asterisk() {
+        let bytes = b"\xa3\x07\x04\x02cn\x04\x01*";
+        let mut cursor = Cursor::new(bytes.as_slice());
+
+        let filter = SimpleLdapCodec::read_filter(&mut cursor).unwrap();
+
+        assert_eq!(filter, "(cn=\\2a)");
+        assert_eq!(
+            super::super::filters::parse_ldap_filter(&filter).unwrap(),
+            super::super::filters::LdapFilter::Equality("cn".to_string(), "*".to_string())
+        );
+    }
+
+    #[test]
+    fn test_ber_filter_rejects_excessive_nesting() {
+        let mut filter = BytesMut::from(&[0x87, 0x02, b'c', b'n'][..]);
+        for _ in 0..=MAX_FILTER_DEPTH {
+            let mut nested = BytesMut::new();
+            nested.put_u8(0xA2);
+            SimpleLdapCodec::write_length(&mut nested, filter.len());
+            nested.extend_from_slice(&filter);
+            filter = nested;
+        }
+
+        let mut cursor = Cursor::new(filter.as_ref());
+        let error = SimpleLdapCodec::read_filter(&mut cursor).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("nesting limit"));
+    }
+
+    #[test]
+    fn test_bind_response_uses_enumerated_result_code() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::new();
+        codec
+            .encode(
+                LdapMessage {
+                    message_id: 1,
+                    protocol_op: LdapProtocolOp::BindResponse {
+                        result: LdapResult::success(),
+                    },
+                },
+                &mut buf,
+            )
+            .unwrap();
+
+        let operation_index = buf
+            .iter()
+            .position(|byte| *byte == LDAP_BIND_RESPONSE)
+            .unwrap();
+        assert_eq!(buf[operation_index + 2], 0x0A);
     }
 
     #[test]

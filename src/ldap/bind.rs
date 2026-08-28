@@ -12,7 +12,12 @@ pub fn handle_bind_request(
 ) -> LdapMessage {
     let result = match auth {
         BindAuthentication::Anonymous => {
-            if auth_handler.is_anonymous_allowed() {
+            if !dn.is_empty() {
+                LdapResult::error(
+                    LdapResultCode::InvalidCredentials,
+                    "Anonymous authentication cannot claim an identity".to_string(),
+                )
+            } else if auth_handler.is_anonymous_allowed() {
                 LdapResult::success()
             } else {
                 LdapResult::error(
@@ -22,6 +27,20 @@ pub fn handle_bind_request(
             }
         }
         BindAuthentication::Simple(password) => {
+            // A zero-length password must never authenticate a claimed identity.
+            // Anonymous simple bind is represented by both an empty DN and password.
+            if password.is_empty() && !dn.is_empty() {
+                return LdapMessage {
+                    message_id,
+                    protocol_op: LdapProtocolOp::BindResponse {
+                        result: LdapResult::error(
+                            LdapResultCode::InvalidCredentials,
+                            "Empty passwords cannot authenticate a named identity".to_string(),
+                        ),
+                    },
+                };
+            }
+
             // Get the entry if DN is provided
             let entry = if dn.is_empty() {
                 None
@@ -156,6 +175,48 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_password_cannot_authenticate_named_identity() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(true);
+
+        let response = handle_bind_request(
+            1,
+            "cn=test,dc=example,dc=com".to_string(),
+            BindAuthentication::Simple(String::new()),
+            &directory,
+            &auth_handler,
+        );
+
+        match response.protocol_op {
+            LdapProtocolOp::BindResponse { result } => {
+                assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
+            }
+            _ => panic!("Expected BindResponse"),
+        }
+    }
+
+    #[test]
+    fn test_anonymous_authentication_cannot_claim_named_identity() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(true);
+
+        let response = handle_bind_request(
+            1,
+            "cn=test,dc=example,dc=com".to_string(),
+            BindAuthentication::Anonymous,
+            &directory,
+            &auth_handler,
+        );
+
+        match response.protocol_op {
+            LdapProtocolOp::BindResponse { result } => {
+                assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
+            }
+            _ => panic!("Expected BindResponse"),
+        }
+    }
+
+    #[test]
     fn test_handle_bind_simple_nonexistent_user() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(false);
@@ -252,11 +313,11 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_bind_anonymous_with_empty_password() {
+    fn test_handle_bind_rejects_named_identity_with_empty_password() {
         let directory = create_test_directory();
         let auth_handler = AuthHandler::new(true);
 
-        // Empty password is treated as anonymous bind
+        // An empty password must not authenticate a claimed identity.
         let response = handle_bind_request(
             1,
             "cn=test,dc=example,dc=com".to_string(),
@@ -267,8 +328,7 @@ mod tests {
 
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
-                assert_eq!(result.result_code, LdapResultCode::Success);
-                assert_eq!(result.diagnostic_message, "");
+                assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
             }
             _ => panic!("Expected BindResponse"),
         }
