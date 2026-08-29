@@ -58,7 +58,13 @@ fn test_cli_missing_file() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("YAML file not found") || stderr.contains("No such file"));
+    let stderr_lower = stderr.to_ascii_lowercase();
+    assert!(
+        stderr_lower.contains("yaml file not found")
+            || stderr_lower.contains("no such file")
+            || stderr_lower.contains("cannot find the file"),
+        "unexpected missing-file error: {stderr}"
+    );
 }
 
 #[test]

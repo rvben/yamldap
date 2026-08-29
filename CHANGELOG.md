@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Restore Windows verification for platform-specific watcher tests and keep dependency-policy tooling compatible with the declared Rust 1.87 minimum.
+- Restore Windows verification for platform-specific watcher tests and diagnostics, and run dependency-policy tooling on its own compatible Rust toolchain without raising yamldap's Rust 1.87 minimum.
 - Exclude logo design sources and reports from the published crate package.
 
 ### Security
