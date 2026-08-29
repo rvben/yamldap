@@ -12,7 +12,16 @@ homepage = "https://github.com/rvben/yamldap"
 documentation = "https://docs.rs/yamldap"
 keywords = ["ldap", "yaml", "directory", "authentication", "testing"]
 categories = ["authentication", "development-tools::testing", "network-programming"]
-exclude = ["/.github", "/assets/*.png", "*.sh", "*.py", "/coverage"]
+exclude = [
+    "/.github",
+    "/assets/*.png",
+    "/assets/fonts",
+    "/assets/logo-concepts",
+    "/docs/logo-report.html",
+    "*.sh",
+    "*.py",
+    "/coverage",
+]
 
 [features]
 default = []

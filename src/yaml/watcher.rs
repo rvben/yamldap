@@ -276,6 +276,7 @@ mod tests {
         assert!(watcher.is_relevant_event(&event, path));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_yaml_watcher_with_symlink() {
         use std::os::unix::fs::symlink;

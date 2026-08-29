@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Migrate YAML parsing from deprecated `serde_yaml` to the maintained `serde_yaml_ng` continuation.
 - Run containers as an unprivileged user with loopback-only host publishing and hardened Compose defaults.
 
+### Fixed
+
+- Restore Windows verification for platform-specific watcher tests and keep dependency-policy tooling compatible with the declared Rust 1.87 minimum.
+- Exclude logo design sources and reports from the published crate package.
+
 ### Security
 
 - Update the transitive `openssl` dependency to the minimum version that clears all known OSV advisories.
