@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/rvben/yamldap/compare/v0.1.4...v0.1.5) - 2026-08-29
+
 ### Fixed
 
 - Decode SASL and Microsoft ADSI Sicily bind requests and return `authMethodNotSupported` instead of dropping the connection, preventing unsupported secure authentication from appearing to hang.
@@ -254,15 +256,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Limited search filter syntax
 - No referral or alias support
 - No TLS/SSL support yet
-
-[0.1.0]: https://github.com/rvben/yamldap/releases/tag/v0.1.0
-[0.0.10]: https://github.com/rvben/yamldap/releases/tag/v0.0.10
-[0.0.9]: https://github.com/rvben/yamldap/releases/tag/v0.0.9
-[0.0.8]: https://github.com/rvben/yamldap/releases/tag/v0.0.8
-[0.0.7]: https://github.com/rvben/yamldap/releases/tag/v0.0.7
-[0.0.6]: https://github.com/rvben/yamldap/releases/tag/v0.0.6
-[0.0.5]: https://github.com/rvben/yamldap/releases/tag/v0.0.5
-[0.0.4]: https://github.com/rvben/yamldap/releases/tag/v0.0.4
-[0.0.3]: https://github.com/rvben/yamldap/releases/tag/v0.0.3
-[0.0.2]: https://github.com/rvben/yamldap/releases/tag/v0.0.2
-[0.0.1]: https://github.com/rvben/yamldap/releases/tag/v0.0.1
