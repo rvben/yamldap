@@ -1,15 +1,19 @@
 # yamldap
 
-<div align="center">
-  <img src="https://raw.githubusercontent.com/rvben/yamldap/main/assets/logo.png" alt="yamldap logo" width="400">
+<p align="center">
+  <img src="assets/logo.png" alt="yamldap Folded Directory logo" width="260">
+</p>
 
-  **A lightweight LDAP server that serves directory data from YAML files**
+<h3 align="center">YAML in, LDAP out.</h3>
 
-  [![Crates.io](https://img.shields.io/crates/v/yamldap.svg)](https://crates.io/crates/yamldap)
-  [![Documentation](https://docs.rs/yamldap/badge.svg)](https://docs.rs/yamldap)
-  [![License](https://img.shields.io/crates/l/yamldap.svg)](https://github.com/rvben/yamldap#license)
-  [![CI](https://github.com/rvben/yamldap/actions/workflows/ci.yml/badge.svg)](https://github.com/rvben/yamldap/actions/workflows/ci.yml)
-</div>
+<p align="center"><strong>A lightweight LDAP server that serves directory data from YAML files</strong></p>
+
+<p align="center">
+  <a href="https://crates.io/crates/yamldap"><img src="https://img.shields.io/crates/v/yamldap.svg" alt="Crates.io"></a>
+  <a href="https://docs.rs/yamldap"><img src="https://docs.rs/yamldap/badge.svg" alt="Documentation"></a>
+  <a href="https://github.com/rvben/yamldap#license"><img src="https://img.shields.io/crates/l/yamldap.svg" alt="License"></a>
+  <a href="https://github.com/rvben/yamldap/actions/workflows/ci.yml"><img src="https://github.com/rvben/yamldap/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
 ---
 
