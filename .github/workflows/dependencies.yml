@@ -13,7 +13,7 @@ permissions:
 jobs:
   update:
     name: Propose policy-approved updates
-    uses: rvben/upd/.github/workflows/dependency-health.yml@355b6dc049f271e8ca9157f1d6595470d4c49066
+    uses: rvben/upd/.github/workflows/dependency-health.yml@1d9075c8c5c2b15242cecc85367edbdebc7d7178
     with:
       langs: rust,actions
       lock: true
@@ -26,4 +26,3 @@ jobs:
       branch: automation/upd-dependencies
       commit-message: "chore(deps): update dependencies with upd"
       auto-merge: false
-      broker-url: ${{ vars.UPD_BROKER_URL }}
