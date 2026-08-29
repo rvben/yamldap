@@ -3,5 +3,8 @@
 # freshness window when a known vulnerability has a fix.
 update_action_shas = true
 
+[automation]
+security_remediation = true
+
 [cooldown]
 default = "7d"
