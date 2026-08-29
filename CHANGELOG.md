@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Parse framed LDAP responses in the release container probe so RootDSE payload bytes cannot be mistaken for protocol operation tags.
+
 ## [0.2.0](https://github.com/rvben/yamldap/compare/v0.1.6...v0.2.0) - 2026-08-29
 
 ### Added

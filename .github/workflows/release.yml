@@ -197,6 +197,62 @@ jobs:
           def tlv(tag: int, value: bytes) -> bytes:
               return bytes([tag]) + length(len(value)) + value
 
+          def read_exact(size: int) -> bytes:
+              chunks = []
+              remaining = size
+              while remaining:
+                  chunk = connection.recv(remaining)
+                  if not chunk:
+                      raise AssertionError("connection closed before complete LDAP message")
+                  chunks.append(chunk)
+                  remaining -= len(chunk)
+              return b"".join(chunks)
+
+          def read_length_from_socket() -> int:
+              first = read_exact(1)[0]
+              if first < 128:
+                  return first
+              width = first & 0x7f
+              assert 0 < width <= 4, f"invalid BER length width: {width}"
+              return int.from_bytes(read_exact(width), "big")
+
+          def read_message() -> bytes:
+              tag = read_exact(1)[0]
+              assert tag == 0x30, f"expected LDAPMessage sequence, got 0x{tag:02x}"
+              return read_exact(read_length_from_socket())
+
+          def parse_tlv(data: bytes, offset: int = 0) -> tuple[int, bytes, int]:
+              assert offset < len(data), "missing BER tag"
+              tag = data[offset]
+              offset += 1
+              assert offset < len(data), "missing BER length"
+              first = data[offset]
+              offset += 1
+              if first < 128:
+                  value_length = first
+              else:
+                  width = first & 0x7f
+                  assert 0 < width <= 4, f"invalid BER length width: {width}"
+                  end = offset + width
+                  assert end <= len(data), "truncated BER length"
+                  value_length = int.from_bytes(data[offset:end], "big")
+                  offset = end
+              end = offset + value_length
+              assert end <= len(data), "truncated BER value"
+              return tag, data[offset:end], end
+
+          def protocol_operation(message: bytes) -> tuple[int, bytes]:
+              message_id_tag, _, offset = parse_tlv(message)
+              assert message_id_tag == 0x02, "LDAP message is missing its message ID"
+              operation_tag, operation, end = parse_tlv(message, offset)
+              assert end == len(message), "unexpected trailing LDAP message fields"
+              return operation_tag, operation
+
+          def assert_success(operation: bytes) -> None:
+              result_tag, result, _ = parse_tlv(operation)
+              assert result_tag == 0x0a, "LDAP result is missing its result code"
+              assert int.from_bytes(result, "big") == 0, operation.hex()
+
           deadline = time.monotonic() + 20
           while True:
               try:
@@ -210,8 +266,9 @@ jobs:
           bind_dn = b"uid=jdoe,ou=users,dc=example,dc=com"
           bind = tlv(0x60, b"\x02\x01\x03" + tlv(0x04, bind_dn) + tlv(0x80, b"password123"))
           connection.sendall(tlv(0x30, b"\x02\x01\x01" + bind))
-          response = connection.recv(4096)
-          assert b"\x61" in response and b"\x0a\x01\x00" in response, response.hex()
+          operation_tag, operation = protocol_operation(read_message())
+          assert operation_tag == 0x61, f"expected BindResponse, got 0x{operation_tag:02x}"
+          assert_success(operation)
 
           search = tlv(
               0x63,
@@ -225,13 +282,15 @@ jobs:
               + tlv(0x30, b""),
           )
           connection.sendall(tlv(0x30, b"\x02\x01\x02" + search))
-          response = b""
-          while b"\x65" not in response:
-              chunk = connection.recv(4096)
-              if not chunk:
-                  raise AssertionError("connection closed before SearchResultDone")
-              response += chunk
-          assert b"\x0a\x01\x00" in response, response.hex()
+          entries = 0
+          while True:
+              operation_tag, operation = protocol_operation(read_message())
+              if operation_tag == 0x65:
+                  assert_success(operation)
+                  break
+              assert operation_tag == 0x64, f"unexpected search response: 0x{operation_tag:02x}"
+              entries += 1
+          assert entries == 1, f"expected one RootDSE entry, got {entries}"
           connection.close()
           PY
       - name: Show container logs on failure
