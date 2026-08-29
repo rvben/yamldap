@@ -2,9 +2,11 @@
 	docker-build docker-buildx docker-compose-registry docker-compose-up docker-login \
 	docker-push docker-push-dockerhub docker-run docker-setup docker-stop fmt fmt-check \
 	help lint package-check publish-crate publish-crate-dry release release-check \
-	release-extra-checks release-lint run test test-integration test-ldap test-unit
+	release-extra-checks release-lint run test test-integration test-ldap test-unit \
+	upd-audit upd-check upd-update
 
 RELEASE_LEVEL ?= patch
+UPD_MAX_BUMP ?= minor
 
 # Default target
 all: build
@@ -177,6 +179,21 @@ audit:
 	cargo deny --locked check
 	cargo deny --locked --manifest-path fuzz/Cargo.toml check
 
+# Preview policy-approved Rust and GitHub Actions updates without writing files.
+upd-check:
+	@command -v upd >/dev/null || { echo "upd is required: cargo install upd --locked"; exit 1; }
+	upd update --check --max-bump $(UPD_MAX_BUMP) --lang rust,actions .
+
+# Apply policy-approved updates and refresh only the affected lockfile entries.
+upd-update:
+	@command -v upd >/dev/null || { echo "upd is required: cargo install upd --locked"; exit 1; }
+	upd update --apply --lock --max-bump $(UPD_MAX_BUMP) --lang rust,actions .
+
+# Query OSV for vulnerabilities in both Rust dependency graphs.
+upd-audit:
+	@command -v upd >/dev/null || { echo "upd is required: cargo install upd --locked"; exit 1; }
+	upd audit --check --lang rust .
+
 # Run the same checks enforced by CI.
 ci: fmt-check check lint test docs-check package-check audit
 
@@ -236,6 +253,9 @@ help:
 	@echo "  make docs-check           - Build docs with warnings denied"
 	@echo "  make package-check        - Dry-run the locked crate package"
 	@echo "  make audit                - Audit locked dependencies with RustSec"
+	@echo "  make upd-check            - Preview policy-approved dependency updates"
+	@echo "  make upd-update           - Apply updates and refresh affected lockfiles"
+	@echo "  make upd-audit            - Audit Rust dependencies with OSV"
 	@echo "  make ci                   - Run all CI checks"
 	@echo ""
 	@echo "Docker:"

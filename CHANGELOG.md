@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add standards-aware DN parsing, semantic DN keys, structural base-DN relocation, and validated immutable directory snapshots.
 - Add bounded filter complexity, directional LDAP messages, a stateful session processor, server resource limits, graceful shutdown, and an embeddable server handle.
 - Add reusable cross-platform verification and pre-publication release gates.
+- Add policy-constrained upd automation for weekly dependency maintenance and daily vulnerability remediation.
 
 ### Changed
 
@@ -19,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Narrow the supported library API to configuration and server lifecycle types; move protocol and directory internals behind an opt-in unstable feature.
 - Migrate YAML parsing from deprecated `serde_yaml` to the maintained `serde_yaml_ng` continuation.
 - Run containers as an unprivileged user with loopback-only host publishing and hardened Compose defaults.
+
+### Security
+
+- Update the transitive `openssl` dependency to the minimum version that clears all known OSV advisories.
 
 ## [0.1.6](https://github.com/rvben/yamldap/compare/v0.1.5...v0.1.6) - 2026-08-29
 

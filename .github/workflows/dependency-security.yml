@@ -1,0 +1,27 @@
+name: Dependency security remediation
+
+on:
+  schedule:
+    - cron: "29 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  remediate:
+    name: Propose vulnerability fixes
+    uses: rvben/upd/.github/workflows/dependency-remediation.yml@be91f2e854b0c6386f253175db02a0e585d9244a # v0.8.4
+    with:
+      publish: true
+      langs: rust
+      allowed-paths: Cargo.toml Cargo.lock fuzz/Cargo.toml fuzz/Cargo.lock
+      prepare-command: rustup toolchain install 1.87.0 --profile minimal --component clippy,rustfmt && rustup default 1.87.0
+      validation-command: make fmt-check check lint test docs-check
+      branch: security/upd-dependencies
+      commit-message: "fix(deps): remediate vulnerable dependencies with upd"
+      auto-merge: false
+      app-client-id: ${{ vars.UPD_APP_CLIENT_ID }}
+    secrets:
+      app-private-key: ${{ secrets.UPD_APP_PRIVATE_KEY }}

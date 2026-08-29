@@ -1,0 +1,7 @@
+# Dependency updates must age for a week before they become eligible. Security
+# remediation uses upd's separate audit workflow and deliberately bypasses this
+# freshness window when a known vulnerability has a fix.
+update_action_shas = true
+
+[cooldown]
+default = "7d"
