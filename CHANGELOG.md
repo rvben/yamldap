@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/rvben/yamldap/compare/v0.1.5...v0.1.6) - 2026-08-29
+
 ### Fixed
 
 - Authenticate crates.io publishing with short-lived trusted-publisher credentials and restore package publishing for the corrective release.
