@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Parse framed LDAP responses in the release container probe so RootDSE payload bytes cannot be mistaken for protocol operation tags.
-
 ## [0.2.0](https://github.com/rvben/yamldap/compare/v0.1.6...v0.2.0) - 2026-08-29
 
 ### Added
@@ -29,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Parse framed LDAP responses in the release container probe so RootDSE payload bytes cannot be mistaken for protocol operation tags.
 - Prevent 0.x version bumps from invalidating the fuzz workspace dependency graph.
 - Restore Windows verification for platform-specific watcher tests and diagnostics, and run dependency-policy tooling on its own compatible Rust toolchain without raising yamldap's Rust 1.87 minimum.
 - Exclude logo design sources and reports from the published crate package.
