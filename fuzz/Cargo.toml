@@ -16,7 +16,6 @@ tokio-util = { version = "0.7", features = ["codec"] }
 
 [dependencies.yamldap]
 path = ".."
-version = "0.1.5"
 features = ["unstable-internals"]
 
 [[bin]]

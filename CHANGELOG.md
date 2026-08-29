@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevent version bumps from invalidating the fuzz workspace dependency graph.
 - Restore Windows verification for platform-specific watcher tests and diagnostics, and run dependency-policy tooling on its own compatible Rust toolchain without raising yamldap's Rust 1.87 minimum.
 - Exclude logo design sources and reports from the published crate package.
 
