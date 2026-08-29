@@ -12,12 +12,16 @@ pub struct CliArgs {
     pub file: PathBuf,
 
     /// Port to listen on
-    #[arg(short, long, default_value = "389")]
+    #[arg(short, long, default_value = "1389")]
     pub port: u16,
 
     /// Address to bind to
-    #[arg(long, default_value = "0.0.0.0")]
+    #[arg(long, default_value = "127.0.0.1")]
     pub bind_address: String,
+
+    /// Acknowledge that plaintext LDAP will be reachable beyond this host
+    #[arg(long)]
+    pub allow_insecure_non_loopback: bool,
 
     /// Override base DN from YAML file
     #[arg(long)]
@@ -45,17 +49,77 @@ pub struct CliArgs {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Config {
-    pub yaml_file: PathBuf,
-    pub bind_address: SocketAddr,
-    pub base_dn: Option<String>,
-    pub allow_anonymous: bool,
-    pub hot_reload: bool,
-    pub log_level: tracing::Level,
-    pub ad_compat: bool,
+    yaml_file: PathBuf,
+    bind_address: SocketAddr,
+    base_dn: Option<String>,
+    allow_anonymous: bool,
+    hot_reload: bool,
+    ad_compat: bool,
 }
 
 impl Config {
+    pub fn new(yaml_file: impl Into<PathBuf>) -> Self {
+        Self {
+            yaml_file: yaml_file.into(),
+            bind_address: SocketAddr::from(([127, 0, 0, 1], 1389)),
+            base_dn: None,
+            allow_anonymous: false,
+            hot_reload: false,
+            ad_compat: false,
+        }
+    }
+
+    pub fn with_bind_address(mut self, bind_address: SocketAddr) -> Self {
+        self.bind_address = bind_address;
+        self
+    }
+
+    pub fn with_base_dn(mut self, base_dn: impl Into<String>) -> Self {
+        self.base_dn = Some(base_dn.into());
+        self
+    }
+
+    pub fn with_anonymous_access(mut self, allow_anonymous: bool) -> Self {
+        self.allow_anonymous = allow_anonymous;
+        self
+    }
+
+    pub fn with_hot_reload(mut self, hot_reload: bool) -> Self {
+        self.hot_reload = hot_reload;
+        self
+    }
+
+    pub fn with_ad_compat(mut self, ad_compat: bool) -> Self {
+        self.ad_compat = ad_compat;
+        self
+    }
+
+    pub fn yaml_file(&self) -> &std::path::Path {
+        &self.yaml_file
+    }
+
+    pub fn bind_address(&self) -> SocketAddr {
+        self.bind_address
+    }
+
+    pub fn base_dn(&self) -> Option<&str> {
+        self.base_dn.as_deref()
+    }
+
+    pub fn allows_anonymous_access(&self) -> bool {
+        self.allow_anonymous
+    }
+
+    pub fn hot_reload(&self) -> bool {
+        self.hot_reload
+    }
+
+    pub fn ad_compat(&self) -> bool {
+        self.ad_compat
+    }
+
     pub fn from_cli_args(args: CliArgs) -> crate::Result<Self> {
         // Handle IPv6 addresses by adding brackets if needed
         let bind_address = if args.bind_address.contains(':') && !args.bind_address.starts_with('[')
@@ -65,27 +129,27 @@ impl Config {
             format!("{}:{}", args.bind_address, args.port)
         };
 
-        let bind_address = bind_address
+        let bind_address: SocketAddr = bind_address
             .parse()
             .map_err(|e| crate::YamlLdapError::Config(format!("Invalid bind address: {}", e)))?;
 
-        let log_level = match args.log_level.to_lowercase().as_str() {
-            "debug" => tracing::Level::DEBUG,
-            "info" => tracing::Level::INFO,
-            "warn" => tracing::Level::WARN,
-            "error" => tracing::Level::ERROR,
-            _ => tracing::Level::INFO,
-        };
+        if !bind_address.ip().is_loopback() && !args.allow_insecure_non_loopback {
+            return Err(crate::YamlLdapError::Config(format!(
+                "refusing to expose plaintext LDAP on {}; use \
+                 --allow-insecure-non-loopback to acknowledge the risk",
+                bind_address.ip()
+            )));
+        }
 
-        Ok(Config {
-            yaml_file: args.file,
-            bind_address,
-            base_dn: args.base_dn,
-            allow_anonymous: args.allow_anonymous,
-            hot_reload: args.hot_reload,
-            log_level,
-            ad_compat: args.ad_compat,
-        })
+        let mut config = Config::new(args.file)
+            .with_bind_address(bind_address)
+            .with_anonymous_access(args.allow_anonymous)
+            .with_hot_reload(args.hot_reload)
+            .with_ad_compat(args.ad_compat);
+        if let Some(base_dn) = args.base_dn {
+            config = config.with_base_dn(base_dn);
+        }
+        Ok(config)
     }
 }
 
@@ -98,8 +162,9 @@ mod tests {
     fn test_cli_args_default_values() {
         let args = CliArgs::parse_from(["yamldap", "-f", "test.yaml"]);
         assert_eq!(args.file, PathBuf::from("test.yaml"));
-        assert_eq!(args.port, 389);
-        assert_eq!(args.bind_address, "0.0.0.0");
+        assert_eq!(args.port, 1389);
+        assert_eq!(args.bind_address, "127.0.0.1");
+        assert!(!args.allow_insecure_non_loopback);
         assert_eq!(args.base_dn, None);
         assert!(!args.allow_anonymous);
         assert!(!args.hot_reload);
@@ -129,6 +194,7 @@ mod tests {
         assert_eq!(args.file, PathBuf::from("test.yaml"));
         assert_eq!(args.port, 1389);
         assert_eq!(args.bind_address, "127.0.0.1");
+        assert!(!args.allow_insecure_non_loopback);
         assert_eq!(args.base_dn, Some("dc=example,dc=com".to_string()));
         assert!(args.allow_anonymous);
         assert!(args.hot_reload);
@@ -142,6 +208,7 @@ mod tests {
             file: PathBuf::from("test.yaml"),
             port: 389,
             bind_address: "127.0.0.1".to_string(),
+            allow_insecure_non_loopback: false,
             base_dn: Some("dc=example,dc=com".to_string()),
             allow_anonymous: true,
             hot_reload: true,
@@ -159,7 +226,6 @@ mod tests {
         assert_eq!(config.base_dn, Some("dc=example,dc=com".to_string()));
         assert!(config.allow_anonymous);
         assert!(config.hot_reload);
-        assert_eq!(config.log_level, tracing::Level::DEBUG);
     }
 
     #[test]
@@ -168,6 +234,7 @@ mod tests {
             file: PathBuf::from("test.yaml"),
             port: 389,
             bind_address: "invalid_address".to_string(),
+            allow_insecure_non_loopback: false,
             base_dn: None,
             allow_anonymous: false,
             hot_reload: false,
@@ -183,36 +250,24 @@ mod tests {
     }
 
     #[test]
-    fn test_config_log_level_parsing() {
-        let test_cases = vec![
-            ("debug", tracing::Level::DEBUG),
-            ("info", tracing::Level::INFO),
-            ("warn", tracing::Level::WARN),
-            ("error", tracing::Level::ERROR),
-            ("DEBUG", tracing::Level::DEBUG),
-            ("INFO", tracing::Level::INFO),
-            ("WARN", tracing::Level::WARN),
-            ("ERROR", tracing::Level::ERROR),
-            ("invalid", tracing::Level::INFO), // default
-            ("", tracing::Level::INFO),        // default
-        ];
+    fn test_non_loopback_requires_explicit_acknowledgement() {
+        let args = CliArgs {
+            file: PathBuf::from("test.yaml"),
+            port: 1389,
+            bind_address: "0.0.0.0".to_string(),
+            allow_insecure_non_loopback: false,
+            base_dn: None,
+            allow_anonymous: false,
+            hot_reload: false,
+            verbose: false,
+            log_level: "info".to_string(),
+            ad_compat: false,
+        };
 
-        for (log_level_str, expected_level) in test_cases {
-            let args = CliArgs {
-                file: PathBuf::from("test.yaml"),
-                port: 389,
-                bind_address: "0.0.0.0".to_string(),
-                base_dn: None,
-                allow_anonymous: false,
-                hot_reload: false,
-                verbose: false,
-                log_level: log_level_str.to_string(),
-                ad_compat: false,
-            };
-
-            let config = Config::from_cli_args(args).unwrap();
-            assert_eq!(config.log_level, expected_level);
-        }
+        let error = Config::from_cli_args(args).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("refusing to expose plaintext LDAP"));
     }
 
     #[test]
@@ -221,6 +276,7 @@ mod tests {
             file: PathBuf::from("test.yaml"),
             port: 389,
             bind_address: "::1".to_string(),
+            allow_insecure_non_loopback: false,
             base_dn: None,
             allow_anonymous: false,
             hot_reload: false,
@@ -242,6 +298,7 @@ mod tests {
             file: PathBuf::from("test.yaml"),
             port: 1389,
             bind_address: "0.0.0.0".to_string(),
+            allow_insecure_non_loopback: true,
             base_dn: None,
             allow_anonymous: false,
             hot_reload: false,
@@ -262,7 +319,6 @@ mod tests {
             base_dn: Some("dc=example,dc=com".to_string()),
             allow_anonymous: true,
             hot_reload: true,
-            log_level: tracing::Level::DEBUG,
             ad_compat: false,
         };
 
@@ -272,7 +328,6 @@ mod tests {
         assert_eq!(cloned.base_dn, config.base_dn);
         assert_eq!(cloned.allow_anonymous, config.allow_anonymous);
         assert_eq!(cloned.hot_reload, config.hot_reload);
-        assert_eq!(cloned.log_level, config.log_level);
         assert_eq!(cloned.ad_compat, config.ad_compat);
     }
 }

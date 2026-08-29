@@ -8,7 +8,7 @@
   [![Crates.io](https://img.shields.io/crates/v/yamldap.svg)](https://crates.io/crates/yamldap)
   [![Documentation](https://docs.rs/yamldap/badge.svg)](https://docs.rs/yamldap)
   [![License](https://img.shields.io/crates/l/yamldap.svg)](https://github.com/rvben/yamldap#license)
-  [![Build Status](https://img.shields.io/github/workflow/status/rvben/yamldap/CI)](https://github.com/rvben/yamldap/actions)
+  [![CI](https://github.com/rvben/yamldap/actions/workflows/ci.yml/badge.svg)](https://github.com/rvben/yamldap/actions/workflows/ci.yml)
 </div>
 
 ---
@@ -19,11 +19,11 @@ A lightweight LDAP server that serves directory data from YAML files, designed f
 
 - 🚀 **Quick Setup** - Define your LDAP directory in a simple YAML file
 - 🔐 **Authentication** - Support for multiple password formats (plain, SHA, SSHA, bcrypt)
-- 🔍 **LDAP Operations** - Bind, search, compare, abandon, and extended operations
+- 🔍 **LDAP Operations** - Bind, unbind, search, compare, and selected extended operations
 - 🛠️ **Development Friendly** - Perfect for testing LDAP integrations locally
 - 🐳 **Docker Support** - Run in containers with provided Dockerfile
 - ⚡ **Lightweight** - Minimal resource usage, fast startup
-- 🎯 **Advanced Filters** - Full LDAP filter support including approximate and extensible match
+- 🎯 **Structural Filters** - BER filters remain typed through evaluation, with bounded complexity
 
 ## Installation
 
@@ -56,13 +56,22 @@ docker pull ghcr.io/rvben/yamldap:latest
 docker pull ghcr.io/rvben/yamldap:0.0.1
 
 # Run with your YAML directory file
-docker run -p 389:389 -v $(pwd)/directory.yaml:/data/directory.yaml ghcr.io/rvben/yamldap:latest -f /data/directory.yaml
+docker run --read-only --cap-drop ALL --security-opt no-new-privileges \
+  -p 127.0.0.1:1389:1389 \
+  -v "$(pwd)/directory.yaml:/data/directory.yaml:ro" \
+  ghcr.io/rvben/yamldap:latest \
+  -f /data/directory.yaml --bind-address 0.0.0.0 --port 1389 \
+  --allow-insecure-non-loopback
 ```
 
 Or build locally:
 ```bash
 docker build -t yamldap .
-docker run -p 389:389 -v $(pwd)/examples/sample_directory.yaml:/data/directory.yaml yamldap:latest -f /data/directory.yaml
+docker run --read-only --cap-drop ALL --security-opt no-new-privileges \
+  -p 127.0.0.1:1389:1389 \
+  -v "$(pwd)/examples/sample_directory.yaml:/data/directory.yaml:ro" \
+  yamldap:latest -f /data/directory.yaml --bind-address 0.0.0.0 \
+  --port 1389 --allow-insecure-non-loopback
 ```
 
 ### Using Docker Compose
@@ -105,23 +114,25 @@ entries:
 
 2. Start the server:
 ```bash
-# On a non-privileged port
-yamldap -f directory.yaml --port 3389
+# Defaults to the loopback-only, non-privileged address 127.0.0.1:1389
+yamldap -f directory.yaml
 
 # Or with Docker from registry
-docker run -p 389:389 -v $(pwd)/directory.yaml:/data/directory.yaml ghcr.io/rvben/yamldap:latest -f /data/directory.yaml
+docker compose up
 
 # Or with anonymous bind enabled
-docker run -p 389:389 -v $(pwd)/directory.yaml:/data/directory.yaml ghcr.io/rvben/yamldap:latest -f /data/directory.yaml --allow-anonymous
+docker compose run --service-ports yamldap \
+  -f /data/directory.yaml --bind-address 0.0.0.0 --port 1389 \
+  --allow-insecure-non-loopback --allow-anonymous
 ```
 
 3. Test with LDAP tools:
 ```bash
 # Search all entries
-ldapsearch -x -H ldap://localhost:3389 -b "dc=example,dc=com" "(objectClass=*)"
+ldapsearch -x -H ldap://localhost:1389 -b "dc=example,dc=com" "(objectClass=*)"
 
 # Authenticate and search
-ldapsearch -x -H ldap://localhost:3389 \
+ldapsearch -x -H ldap://localhost:1389 \
   -D "uid=john,ou=users,dc=example,dc=com" \
   -w secret123 \
   -b "dc=example,dc=com" "(uid=john)"
@@ -134,9 +145,10 @@ yamldap [OPTIONS]
 
 Options:
   -f, --file <FILE>           Path to YAML directory file
-  -p, --port <PORT>           Port to listen on [default: 389]
-      --bind-address <ADDR>   Address to bind to [default: 0.0.0.0]
-      --base-dn <DN>          Override the base DN from the YAML file
+  -p, --port <PORT>                    Port to listen on [default: 1389]
+      --bind-address <ADDR>            Address to bind to [default: 127.0.0.1]
+      --allow-insecure-non-loopback    Acknowledge non-loopback plaintext LDAP exposure
+      --base-dn <DN>                   Relocate the YAML directory to a new base DN
       --allow-anonymous       Allow anonymous bind operations
       --hot-reload            Enable hot-reloading of YAML file changes
   -v, --verbose               Enable verbose logging
@@ -146,6 +158,15 @@ Options:
 ```
 
 ## YAML Directory Format
+
+YAML is compiled and validated before it becomes visible to clients. Invalid
+DNs, duplicate semantic DNs, entries outside the base, unsupported value
+types, schema cardinality violations, and inconsistent RDN values fail the
+load. A failed hot reload leaves the previous complete snapshot active.
+
+`--base-dn` relocates entry DNs and in-tree values of DN-valued attributes;
+external DN references remain unchanged. RootDSE, bind, search, and returned
+DNs therefore describe the same relocated tree.
 
 ### Basic Structure
 ```yaml
@@ -178,7 +199,7 @@ See [examples/sample_directory.yaml](examples/sample_directory.yaml) for a full 
 
 ## LDAP Filter Support
 
-yamldap supports comprehensive LDAP filter syntax including:
+yamldap supports the following bounded LDAP filter forms:
 
 ### Basic Filters
 - **Equality**: `(uid=john)`
@@ -196,8 +217,27 @@ yamldap supports comprehensive LDAP filter syntax including:
 - **Extensible Match**: 
   - Simple: `(cn:=John Doe)`
   - With matching rule: `(cn:caseExactMatch:=John Doe)`
-  - DN components: `(:dn:=users)` - Matches entries with "users" in their DN
+  - DN attributes: `(ou:dn:=users)` - Matches entries whose DN has an `ou=users` component
   - Combined: `(cn:dn:caseIgnoreMatch:=admin)`
+
+Unknown matching rules are rejected rather than assigned guessed semantics.
+Filter nesting and total node counts are bounded for both BER input and the
+text parser. Assertion values are never included in request logs.
+
+## Protocol capabilities
+
+| Capability | Status |
+|---|---|
+| LDAP v3 simple and anonymous bind | Supported |
+| Base, one-level, and subtree search | Supported |
+| Compare and Unbind | Supported |
+| RootDSE discovery | Supported |
+| Search size/time and server resource limits | Supported |
+| Hot reload with atomic snapshots | Supported |
+| Abandon cancellation | Not currently supported |
+| SASL, Kerberos, NTLM, and Sicily authentication | Not supported; an LDAP error is returned |
+| Aliases, referrals, controls, paging, Add/Modify/Delete | Not supported |
+| TLS/StartTLS | Not built in |
 
 ### Escape Sequences
 Special characters can be escaped in filter values:
@@ -266,7 +306,7 @@ The optional `--ad-compat` server flag maps selected Active Directory-style filt
 ```python
 import ldap
 
-conn = ldap.initialize("ldap://localhost:389")
+conn = ldap.initialize("ldap://localhost:1389")
 conn.simple_bind_s("uid=john,ou=users,dc=example,dc=com", "password")
 results = conn.search_s("dc=example,dc=com", ldap.SCOPE_SUBTREE, "(uid=john)")
 ```
@@ -299,7 +339,7 @@ AUTH_LDAP_GROUP_TYPE = GroupOfNamesType()
 ### Node.js
 ```javascript
 const ldap = require('ldapjs');
-const client = ldap.createClient({ url: 'ldap://localhost:389' });
+const client = ldap.createClient({ url: 'ldap://localhost:1389' });
 
 client.bind('uid=john,ou=users,dc=example,dc=com', 'password', (err) => {
   // Authenticated
@@ -311,7 +351,7 @@ client.bind('uid=john,ou=users,dc=example,dc=com', 'password', (err) => {
 @Bean
 public LdapContextSource contextSource() {
     LdapContextSource contextSource = new LdapContextSource();
-    contextSource.setUrl("ldap://localhost:389");
+    contextSource.setUrl("ldap://localhost:1389");
     contextSource.setBase("dc=example,dc=com");
     contextSource.setUserDn("uid=john,ou=users,dc=example,dc=com");
     contextSource.setPassword("password");
@@ -341,7 +381,7 @@ make bench
 # Build release version
 cargo build --release
 
-# Build Docker image (3.99MB scratch image)
+# Build the locked, non-root container image
 make docker-build
 ```
 
@@ -359,13 +399,11 @@ make ci
 
 ### Testing & Coverage
 
-The project includes comprehensive unit tests with near 100% code coverage:
-- 250+ unit and integration tests covering all major components
-- Complete error path and edge case coverage
-- Concurrent operation and thread safety tests
-- Integration tests for full server lifecycle
-- Performance benchmarks with Criterion
-- Test coverage reporting via cargo-tarpaulin
+The repository includes unit, protocol, integration, lifecycle, hot-reload,
+property-style, and fuzz tests. CI runs formatting, strict Clippy, tests across
+Linux/macOS/Windows, warning-free rustdoc, fuzz-target compilation, package
+verification, and dependency policy checks. Coverage is reported as measured
+output; the project does not claim a percentage that CI has not produced.
 
 Run `make help` to see all available Make targets.
 
@@ -394,10 +432,14 @@ See [fuzz/README.md](fuzz/README.md) for detailed fuzzing instructions.
 - No referral or alias support
 - No paged-results or other LDAP controls
 - No built-in TLS/SSL support (see below)
+- Abandon requests are decoded but cannot cancel an in-flight search yet
 
 ## TLS/SSL Support
 
-yamldap intentionally does not include built-in TLS support to maintain its core value: simplicity. For local development and testing, TLS is rarely needed. When TLS is required, you can easily add it using a reverse proxy:
+yamldap is a local development and testing server and does not include TLS.
+The default loopback bind protects against accidental LAN exposure. Do not
+send production credentials over plaintext LDAP. For an isolated test setup
+that requires TLS, terminate it with a locally controlled proxy:
 
 ### Using stunnel
 ```bash

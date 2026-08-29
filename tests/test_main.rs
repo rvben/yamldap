@@ -3,6 +3,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
 
+fn yamldap_command() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_yamldap"))
+}
+
 /// Helper to create a test YAML directory file
 fn create_test_yaml(dir: &TempDir) -> PathBuf {
     let yaml_path = dir.path().join("test_directory.yaml");
@@ -21,8 +25,8 @@ entries:
 
 #[test]
 fn test_cli_help() {
-    let output = Command::new("cargo")
-        .args(["run", "--bin", "yamldap", "--", "--help"])
+    let output = yamldap_command()
+        .arg("--help")
         .output()
         .expect("Failed to execute process");
 
@@ -35,8 +39,8 @@ fn test_cli_help() {
 
 #[test]
 fn test_cli_version() {
-    let output = Command::new("cargo")
-        .args(["run", "--bin", "yamldap", "--", "--version"])
+    let output = yamldap_command()
+        .arg("--version")
         .output()
         .expect("Failed to execute process");
 
@@ -47,15 +51,8 @@ fn test_cli_version() {
 
 #[test]
 fn test_cli_missing_file() {
-    let output = Command::new("cargo")
-        .args([
-            "run",
-            "--bin",
-            "yamldap",
-            "--",
-            "--file",
-            "nonexistent.yaml",
-        ])
+    let output = yamldap_command()
+        .args(["--file", "nonexistent.yaml"])
         .output()
         .expect("Failed to execute process");
 
@@ -69,12 +66,8 @@ fn test_cli_invalid_port() {
     let temp_dir = TempDir::new().unwrap();
     let yaml_path = create_test_yaml(&temp_dir);
 
-    let output = Command::new("cargo")
+    let output = yamldap_command()
         .args([
-            "run",
-            "--bin",
-            "yamldap",
-            "--",
             "--file",
             yaml_path.to_str().unwrap(),
             "--port",
@@ -94,12 +87,8 @@ fn test_cli_log_levels() {
     for level in &[
         "debug", "info", "warn", "error", "DEBUG", "INFO", "WARN", "ERROR",
     ] {
-        let output = Command::new("cargo")
+        let output = yamldap_command()
             .args([
-                "run",
-                "--bin",
-                "yamldap",
-                "--",
                 "--file",
                 yaml_path.to_str().unwrap(),
                 "--log-level",
@@ -115,8 +104,8 @@ fn test_cli_log_levels() {
 
 #[test]
 fn test_cli_verbose_flag() {
-    let output = Command::new("cargo")
-        .args(["run", "--bin", "yamldap", "--", "--verbose", "--help"])
+    let output = yamldap_command()
+        .args(["--verbose", "--help"])
         .output()
         .expect("Failed to execute process");
 
@@ -127,8 +116,8 @@ fn test_cli_verbose_flag() {
 fn test_cli_all_arguments() {
     // We don't need the yaml file for this test
     // Just test that help output shows all arguments
-    let output = Command::new("cargo")
-        .args(["run", "--bin", "yamldap", "--", "--help"])
+    let output = yamldap_command()
+        .arg("--help")
         .output()
         .expect("Failed to execute process");
 
@@ -143,4 +132,5 @@ fn test_cli_all_arguments() {
     assert!(output_str.contains("--verbose"));
     assert!(output_str.contains("--hot-reload"));
     assert!(output_str.contains("--allow-anonymous"));
+    assert!(output_str.contains("--allow-insecure-non-loopback"));
 }

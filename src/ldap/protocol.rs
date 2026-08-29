@@ -1,25 +1,24 @@
-use bytes::BytesMut;
 use std::collections::HashMap;
 use std::fmt;
-use tokio_util::codec::{Decoder, Encoder};
+
+use super::filters::LdapFilter;
 
 pub type LdapMessageId = u32;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct LdapMessage {
+pub struct LdapRequestMessage {
     pub message_id: LdapMessageId,
-    pub protocol_op: LdapProtocolOp,
+    pub protocol_op: LdapRequest,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum LdapProtocolOp {
+// These names intentionally mirror the LDAP ASN.1 protocol operation names.
+#[allow(clippy::enum_variant_names)]
+pub enum LdapRequest {
     BindRequest {
         version: u8,
         dn: String,
         authentication: BindAuthentication,
-    },
-    BindResponse {
-        result: LdapResult,
     },
     UnbindRequest,
     SearchRequest {
@@ -29,8 +28,35 @@ pub enum LdapProtocolOp {
         size_limit: u32,
         time_limit: u32,
         types_only: bool,
-        filter: String, // Simplified - store as string for now
+        filter: LdapFilter,
         attributes: Vec<String>,
+    },
+    CompareRequest {
+        dn: String,
+        attribute: String,
+        value: String,
+    },
+    AbandonRequest {
+        message_id: LdapMessageId,
+    },
+    ExtendedRequest {
+        name: String,
+        value: Option<Vec<u8>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LdapResponseMessage {
+    pub message_id: LdapMessageId,
+    pub protocol_op: LdapResponse,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+// These names intentionally mirror the LDAP ASN.1 protocol operation names.
+#[allow(clippy::enum_variant_names)]
+pub enum LdapResponse {
+    BindResponse {
+        result: LdapResult,
     },
     SearchResultEntry {
         dn: String,
@@ -39,20 +65,8 @@ pub enum LdapProtocolOp {
     SearchResultDone {
         result: LdapResult,
     },
-    CompareRequest {
-        dn: String,
-        attribute: String,
-        value: String,
-    },
     CompareResponse {
         result: LdapResult,
-    },
-    AbandonRequest {
-        message_id: LdapMessageId,
-    },
-    ExtendedRequest {
-        name: String,           // OID
-        value: Option<Vec<u8>>, // Optional value
     },
     ExtendedResponse {
         result: LdapResult,
@@ -111,6 +125,8 @@ pub enum SearchScope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+// These names intentionally mirror RFC 4511's derefAliases enumeration.
+#[allow(clippy::enum_variant_names)]
 pub enum DerefAliases {
     NeverDerefAliases = 0,
     DerefInSearching = 1,
@@ -127,6 +143,8 @@ pub struct LdapResult {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
+// Keep the complete LDAP result-code vocabulary available for protocol work.
+#[allow(dead_code)]
 pub enum LdapResultCode {
     Success = 0,
     OperationsError = 1,
@@ -176,33 +194,6 @@ impl LdapResult {
             matched_dn: String::new(),
             diagnostic_message: message,
         }
-    }
-}
-
-pub struct LdapCodec;
-
-impl Decoder for LdapCodec {
-    type Item = LdapMessage;
-    type Error = std::io::Error;
-
-    fn decode(&mut self, _src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        // This is a simplified decoder - in a real implementation,
-        // we would use proper ASN.1 BER decoding
-        // For now, return None to indicate we need more data
-        // The actual implementation would parse LDAP messages here
-        Ok(None)
-    }
-}
-
-impl Encoder<LdapMessage> for LdapCodec {
-    type Error = std::io::Error;
-
-    fn encode(&mut self, _item: LdapMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        // This is a simplified encoder - in a real implementation,
-        // we would use proper ASN.1 BER encoding
-        // For now, just write a placeholder
-        dst.extend_from_slice(b"LDAP");
-        Ok(())
     }
 }
 
@@ -329,27 +320,27 @@ mod tests {
 
     #[test]
     fn test_ldap_message_structure() {
-        let msg = LdapMessage {
+        let msg = LdapRequestMessage {
             message_id: 42,
-            protocol_op: LdapProtocolOp::UnbindRequest,
+            protocol_op: LdapRequest::UnbindRequest,
         };
         assert_eq!(msg.message_id, 42);
         match msg.protocol_op {
-            LdapProtocolOp::UnbindRequest => {}
+            LdapRequest::UnbindRequest => {}
             _ => panic!("Expected UnbindRequest"),
         }
     }
 
     #[test]
     fn test_ldap_protocol_op_bind_request() {
-        let op = LdapProtocolOp::BindRequest {
+        let op = LdapRequest::BindRequest {
             version: 3,
             dn: "cn=admin,dc=example,dc=com".to_string(),
             authentication: BindAuthentication::Simple("secret".to_string()),
         };
 
         match op {
-            LdapProtocolOp::BindRequest {
+            LdapRequest::BindRequest {
                 version,
                 dn,
                 authentication,
@@ -367,19 +358,19 @@ mod tests {
 
     #[test]
     fn test_ldap_protocol_op_search_request() {
-        let op = LdapProtocolOp::SearchRequest {
+        let op = LdapRequest::SearchRequest {
             base_dn: "dc=example,dc=com".to_string(),
             scope: SearchScope::WholeSubtree,
             deref_aliases: DerefAliases::NeverDerefAliases,
             size_limit: 100,
             time_limit: 60,
             types_only: false,
-            filter: "(objectClass=*)".to_string(),
+            filter: LdapFilter::Present("objectClass".to_string()),
             attributes: vec!["cn".to_string(), "mail".to_string()],
         };
 
         match op {
-            LdapProtocolOp::SearchRequest {
+            LdapRequest::SearchRequest {
                 base_dn,
                 scope,
                 deref_aliases,
@@ -395,7 +386,7 @@ mod tests {
                 assert_eq!(size_limit, 100);
                 assert_eq!(time_limit, 60);
                 assert!(!types_only);
-                assert_eq!(filter, "(objectClass=*)");
+                assert_eq!(filter, LdapFilter::Present("objectClass".to_string()));
                 assert_eq!(attributes, vec!["cn", "mail"]);
             }
             _ => panic!("Expected SearchRequest"),
@@ -408,13 +399,13 @@ mod tests {
         attrs.insert("cn".to_string(), vec!["John Doe".to_string()]);
         attrs.insert("mail".to_string(), vec!["john@example.com".to_string()]);
 
-        let op = LdapProtocolOp::SearchResultEntry {
+        let op = LdapResponse::SearchResultEntry {
             dn: "cn=John Doe,dc=example,dc=com".to_string(),
             attributes: attrs.clone(),
         };
 
         match op {
-            LdapProtocolOp::SearchResultEntry { dn, attributes } => {
+            LdapResponse::SearchResultEntry { dn, attributes } => {
                 assert_eq!(dn, "cn=John Doe,dc=example,dc=com");
                 assert_eq!(attributes, attrs);
             }
@@ -424,14 +415,14 @@ mod tests {
 
     #[test]
     fn test_ldap_protocol_op_compare_request() {
-        let op = LdapProtocolOp::CompareRequest {
+        let op = LdapRequest::CompareRequest {
             dn: "cn=user,dc=example,dc=com".to_string(),
             attribute: "userPassword".to_string(),
             value: "secret".to_string(),
         };
 
         match op {
-            LdapProtocolOp::CompareRequest {
+            LdapRequest::CompareRequest {
                 dn,
                 attribute,
                 value,
@@ -445,34 +436,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ldap_codec_encoder() {
-        let mut codec = LdapCodec;
-        let mut buf = BytesMut::new();
-
-        let msg = LdapMessage {
-            message_id: 1,
-            protocol_op: LdapProtocolOp::UnbindRequest,
-        };
-
-        // Test that encoding doesn't error
-        let result = codec.encode(msg, &mut buf);
-        assert!(result.is_ok());
-        assert!(!buf.is_empty());
-        assert_eq!(&buf[..], b"LDAP"); // Our placeholder implementation
-    }
-
-    #[test]
-    fn test_ldap_codec_decoder() {
-        let mut codec = LdapCodec;
-        let mut buf = BytesMut::new();
-
-        // Test that decoding returns None (needs more data)
-        let result = codec.decode(&mut buf);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none());
-    }
-
-    #[test]
     fn test_equality_traits() {
         let result1 = LdapResult::success();
         let result2 = LdapResult::success();
@@ -481,13 +444,13 @@ mod tests {
         let result3 = LdapResult::error(LdapResultCode::NoSuchObject, "Not found".to_string());
         assert_ne!(result1, result3);
 
-        let msg1 = LdapMessage {
+        let msg1 = LdapRequestMessage {
             message_id: 1,
-            protocol_op: LdapProtocolOp::UnbindRequest,
+            protocol_op: LdapRequest::UnbindRequest,
         };
-        let msg2 = LdapMessage {
+        let msg2 = LdapRequestMessage {
             message_id: 1,
-            protocol_op: LdapProtocolOp::UnbindRequest,
+            protocol_op: LdapRequest::UnbindRequest,
         };
         assert_eq!(msg1, msg2);
     }
@@ -498,9 +461,9 @@ mod tests {
         let result_clone = result.clone();
         assert_eq!(result, result_clone);
 
-        let msg = LdapMessage {
+        let msg = LdapResponseMessage {
             message_id: 42,
-            protocol_op: LdapProtocolOp::BindResponse {
+            protocol_op: LdapResponse::BindResponse {
                 result: LdapResult::success(),
             },
         };

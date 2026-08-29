@@ -4,7 +4,7 @@ use arbitrary::{Arbitrary, Unstructured};
 use bytes::{BufMut, BytesMut};
 use libfuzzer_sys::fuzz_target;
 use tokio_util::codec::Decoder;
-use yamldap::ldap::SimpleLdapCodec;
+use yamldap::unstable::SimpleLdapCodec;
 
 // Define structures for generating semi-valid LDAP messages
 #[derive(Arbitrary, Debug)]
@@ -67,26 +67,27 @@ enum FuzzOperation {
 impl FuzzLdapMessage {
     fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::new();
-        
+
         // SEQUENCE tag
         buf.put_u8(self.sequence_tag);
-        
+
         // Length encoding
         match &self.length {
             FuzzLength::Short(len) => buf.put_u8(*len),
             FuzzLength::Long { num_octets, value } => {
-                buf.put_u8(0x80 | (num_octets & 0x7f));
-                for i in (0..*num_octets).rev() {
+                let num_octets = (*num_octets).min(4);
+                buf.put_u8(0x80 | num_octets);
+                for i in (0..num_octets).rev() {
                     buf.put_u8((value >> (i * 8)) as u8);
                 }
             }
         }
-        
+
         // Message ID
         buf.put_u8(self.message_id.tag);
         buf.put_u8(self.message_id.length);
         buf.put_u32(self.message_id.value);
-        
+
         // Operation
         match &self.operation {
             FuzzOperation::BindRequest {
@@ -171,7 +172,7 @@ impl FuzzLdapMessage {
                 buf.put_slice(&data[..data.len().min(1000)]);
             }
         }
-        
+
         buf
     }
 }
@@ -181,9 +182,9 @@ fuzz_target!(|data: &[u8]| {
     let mut u = Unstructured::new(data);
     if let Ok(msg) = FuzzLdapMessage::arbitrary(&mut u) {
         let mut buf = msg.to_bytes();
-        
+
         // Try to decode the generated message
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         match codec.decode(&mut buf) {
             Ok(Some(_msg)) => {
                 // Successfully decoded

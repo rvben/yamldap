@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use yamldap::{Config, Server};
+use tokio::net::TcpStream;
+use yamldap::{Config, Server, ServerHandle};
 
 const ORIGINAL_PASSWORD: &str = "original-secret";
 const ROTATED_PASSWORD: &str = "rotated-secret";
@@ -15,7 +15,7 @@ struct TestServer {
     address: SocketAddr,
     url: String,
     yaml_file: NamedTempFile,
-    task: tokio::task::JoinHandle<()>,
+    _handle: ServerHandle,
 }
 
 impl TestServer {
@@ -23,27 +23,19 @@ impl TestServer {
         let mut yaml_file = NamedTempFile::new().unwrap();
         write_directory(&mut yaml_file, ORIGINAL_PASSWORD);
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let config = Config {
-            yaml_file: yaml_file.path().to_path_buf(),
-            bind_address: address,
-            base_dn: None,
-            allow_anonymous,
-            hot_reload,
-            log_level: tracing::Level::INFO,
-            ad_compat: false,
-        };
+        let config = Config::new(yaml_file.path())
+            .with_bind_address("127.0.0.1:0".parse().unwrap())
+            .with_anonymous_access(allow_anonymous)
+            .with_hot_reload(hot_reload);
         let server = Server::new(config).await.unwrap();
-        let task = tokio::spawn(async move {
-            let _ = server.run_with_listener(listener).await;
-        });
+        let handle = server.start().await.unwrap();
+        let address = handle.local_addr();
 
         Self {
             address,
             url: format!("ldap://{address}"),
             yaml_file,
-            task,
+            _handle: handle,
         }
     }
 
@@ -84,12 +76,6 @@ async fn read_ldap_frame(stream: &mut TcpStream) -> Vec<u8> {
         .expect("failed to read LDAP response body");
     frame.extend_from_slice(&content);
     frame
-}
-
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
 }
 
 fn write_directory(file: &mut NamedTempFile, password: &str) {

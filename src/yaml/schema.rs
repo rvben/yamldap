@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct YamlDirectory {
     pub directory: DirectoryConfig,
     #[serde(default)]
@@ -10,11 +11,13 @@ pub struct YamlDirectory {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DirectoryConfig {
     pub base_dn: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SchemaConfig {
     #[serde(default)]
     pub object_classes: Vec<ObjectClassDef>,
@@ -23,12 +26,22 @@ pub struct SchemaConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObjectClassDef {
     pub name: String,
+    /// V1 compatibility: every listed attribute is required.
+    #[serde(default)]
     pub attributes: Vec<String>,
+    /// V2-style explicit required attributes.
+    #[serde(default)]
+    pub must: Vec<String>,
+    /// V2-style explicit optional attributes.
+    #[serde(default)]
+    pub may: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttributeDef {
     pub syntax: String,
     #[serde(default)]
@@ -41,31 +54,58 @@ pub struct YamlEntry {
     #[serde(rename = "objectClass")]
     pub object_class: Vec<String>,
     #[serde(flatten)]
-    pub attributes: HashMap<String, serde_yaml::Value>,
+    pub attributes: HashMap<String, serde_yaml_ng::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct YamlSchema {
-    pub object_classes: HashMap<String, Vec<String>>,
+    pub object_classes: HashMap<String, ObjectClassSchema>,
     pub custom_attributes: HashMap<String, AttributeDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectClassSchema {
+    pub required_attributes: Vec<String>,
+    pub allowed_attributes: Vec<String>,
 }
 
 impl From<SchemaConfig> for YamlSchema {
     fn from(config: SchemaConfig) -> Self {
-        let mut object_classes = HashMap::new();
+        // V1 schema blocks extend the built-ins. A same-named definition is
+        // an intentional override; unrelated built-ins remain available.
+        let mut schema = YamlSchema::default();
         for oc in config.object_classes {
-            object_classes.insert(oc.name, oc.attributes);
+            if let Some(existing_name) = schema
+                .object_classes
+                .keys()
+                .find(|name| name.eq_ignore_ascii_case(&oc.name))
+                .cloned()
+            {
+                schema.object_classes.remove(&existing_name);
+            }
+            let (required_attributes, allowed_attributes) = if oc.attributes.is_empty() {
+                (oc.must, oc.may)
+            } else {
+                (oc.attributes, Vec::new())
+            };
+            schema.object_classes.insert(
+                oc.name,
+                ObjectClassSchema {
+                    required_attributes,
+                    allowed_attributes,
+                },
+            );
         }
-
-        YamlSchema {
-            object_classes,
-            custom_attributes: config.custom_attributes,
-        }
+        schema.custom_attributes = config.custom_attributes;
+        schema
     }
 }
 
 impl YamlSchema {
     /// Get all known attributes from the schema
+    #[cfg(any(test, feature = "unstable-internals"))]
     pub fn get_all_known_attributes(&self) -> std::collections::HashSet<String> {
         let mut attributes = std::collections::HashSet::new();
 
@@ -74,8 +114,12 @@ impl YamlSchema {
         attributes.insert("dn".to_string());
 
         // Add attributes from all object classes
-        for attrs in self.object_classes.values() {
-            for attr in attrs {
+        for object_class in self.object_classes.values() {
+            for attr in object_class
+                .required_attributes
+                .iter()
+                .chain(&object_class.allowed_attributes)
+            {
                 attributes.insert(attr.to_lowercase());
             }
         }
@@ -94,31 +138,36 @@ impl Default for YamlSchema {
         let mut object_classes = HashMap::new();
 
         // Add standard LDAP object classes
-        object_classes.insert("top".to_string(), vec![]);
-        object_classes.insert("domain".to_string(), vec!["dc".to_string()]);
-        object_classes.insert("organizationalUnit".to_string(), vec!["ou".to_string()]);
+        object_classes.insert("top".to_string(), object_class(&[], &[]));
+        object_classes.insert("domain".to_string(), object_class(&["dc"], &[]));
+        object_classes.insert(
+            "organizationalUnit".to_string(),
+            object_class(&["ou"], &["description"]),
+        );
         object_classes.insert(
             "person".to_string(),
-            vec!["cn".to_string(), "sn".to_string()],
+            object_class(&["cn", "sn"], &["userPassword"]),
         );
         object_classes.insert(
             "inetOrgPerson".to_string(),
-            vec![
-                "uid".to_string(),
-                "mail".to_string(),
-                "givenName".to_string(),
-                "userPassword".to_string(),
-            ],
+            object_class(&[], &["uid", "mail", "givenName", "userPassword"]),
         );
         object_classes.insert(
             "groupOfNames".to_string(),
-            vec!["cn".to_string(), "member".to_string()],
+            object_class(&["cn", "member"], &["description"]),
         );
 
         YamlSchema {
             object_classes,
             custom_attributes: HashMap::new(),
         }
+    }
+}
+
+fn object_class(required: &[&str], allowed: &[&str]) -> ObjectClassSchema {
+    ObjectClassSchema {
+        required_attributes: required.iter().map(|name| (*name).to_string()).collect(),
+        allowed_attributes: allowed.iter().map(|name| (*name).to_string()).collect(),
     }
 }
 
@@ -149,10 +198,14 @@ mod tests {
                 ObjectClassDef {
                     name: "customPerson".to_string(),
                     attributes: vec!["cn".to_string(), "employeeNumber".to_string()],
+                    must: vec![],
+                    may: vec![],
                 },
                 ObjectClassDef {
                     name: "organizationalPerson".to_string(),
                     attributes: vec!["title".to_string(), "department".to_string()],
+                    must: vec![],
+                    may: vec![],
                 },
             ],
             custom_attributes: custom_attrs,
@@ -161,7 +214,7 @@ mod tests {
         let yaml_schema: YamlSchema = schema_config.into();
 
         // Verify object classes were converted
-        assert_eq!(yaml_schema.object_classes.len(), 2);
+        assert!(yaml_schema.object_classes.len() >= 2);
         assert!(yaml_schema.object_classes.contains_key("customPerson"));
         assert!(yaml_schema
             .object_classes
@@ -169,14 +222,22 @@ mod tests {
 
         // Verify attributes for each object class
         let custom_person_attrs = &yaml_schema.object_classes["customPerson"];
-        assert_eq!(custom_person_attrs.len(), 2);
-        assert!(custom_person_attrs.contains(&"cn".to_string()));
-        assert!(custom_person_attrs.contains(&"employeeNumber".to_string()));
+        assert_eq!(custom_person_attrs.required_attributes.len(), 2);
+        assert!(custom_person_attrs
+            .required_attributes
+            .contains(&"cn".to_string()));
+        assert!(custom_person_attrs
+            .required_attributes
+            .contains(&"employeeNumber".to_string()));
 
         let org_person_attrs = &yaml_schema.object_classes["organizationalPerson"];
-        assert_eq!(org_person_attrs.len(), 2);
-        assert!(org_person_attrs.contains(&"title".to_string()));
-        assert!(org_person_attrs.contains(&"department".to_string()));
+        assert_eq!(org_person_attrs.required_attributes.len(), 2);
+        assert!(org_person_attrs
+            .required_attributes
+            .contains(&"title".to_string()));
+        assert!(org_person_attrs
+            .required_attributes
+            .contains(&"department".to_string()));
 
         // Verify custom attributes
         assert_eq!(yaml_schema.custom_attributes.len(), 2);
@@ -206,13 +267,20 @@ mod tests {
 
         // Verify some key attributes
         let person_attrs = &schema.object_classes["person"];
-        assert!(person_attrs.contains(&"cn".to_string()));
-        assert!(person_attrs.contains(&"sn".to_string()));
+        assert!(person_attrs.required_attributes.contains(&"cn".to_string()));
+        assert!(person_attrs.required_attributes.contains(&"sn".to_string()));
 
         let inet_org_attrs = &schema.object_classes["inetOrgPerson"];
-        assert!(inet_org_attrs.contains(&"uid".to_string()));
-        assert!(inet_org_attrs.contains(&"mail".to_string()));
-        assert!(inet_org_attrs.contains(&"userPassword".to_string()));
+        assert!(inet_org_attrs.required_attributes.is_empty());
+        assert!(inet_org_attrs
+            .allowed_attributes
+            .contains(&"uid".to_string()));
+        assert!(inet_org_attrs
+            .allowed_attributes
+            .contains(&"mail".to_string()));
+        assert!(inet_org_attrs
+            .allowed_attributes
+            .contains(&"userPassword".to_string()));
 
         // Verify no custom attributes by default
         assert!(schema.custom_attributes.is_empty());
@@ -227,7 +295,8 @@ mod tests {
 
         let yaml_schema: YamlSchema = schema_config.into();
 
-        assert!(yaml_schema.object_classes.is_empty());
+        assert!(yaml_schema.object_classes.contains_key("top"));
+        assert!(yaml_schema.object_classes.contains_key("person"));
         assert!(yaml_schema.custom_attributes.is_empty());
     }
 }

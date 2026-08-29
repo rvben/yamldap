@@ -2,7 +2,7 @@
 # This builds the binary from source for multi-platform support
 
 # Build stage
-FROM rust:1.87 AS builder
+FROM rust:1.87@sha256:251cec8da4689d180f124ef00024c2f83f79d9bf984e43c180a598119e326b84 AS builder
 
 # Install musl tools for static linking
 RUN apt-get update && \
@@ -21,7 +21,7 @@ RUN case "$TARGETPLATFORM" in \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac && \
     rustup target add $RUST_TARGET && \
-    RUSTFLAGS='-C target-feature=+crt-static' cargo build --release --target $RUST_TARGET && \
+    RUSTFLAGS='-C target-feature=+crt-static' cargo build --locked --release --target $RUST_TARGET && \
     cp target/$RUST_TARGET/release/yamldap /yamldap
 
 # Runtime stage - using scratch (empty image)
@@ -35,8 +35,11 @@ LABEL org.opencontainers.image.licenses=MIT
 # Copy only the binary
 COPY --from=builder /yamldap /yamldap
 
-# Default to port 389 (standard LDAP port)
-EXPOSE 389
+# Use the unprivileged LDAP development port.
+EXPOSE 1389
+
+# A numeric identity works in scratch without requiring /etc/passwd.
+USER 65532:65532
 
 # The binary is the entrypoint
 ENTRYPOINT ["/yamldap"]

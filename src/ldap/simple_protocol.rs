@@ -6,6 +6,9 @@ use std::io::{self, Cursor};
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::debug;
 
+use super::filters::{
+    ExtensibleFilter, FilterLimits, LdapFilter, SubstringFilter, DEFAULT_FILTER_LIMITS,
+};
 use super::protocol::*;
 
 const LDAP_BIND_REQUEST: u8 = 0x60;
@@ -19,10 +22,24 @@ const LDAP_COMPARE_RESPONSE: u8 = 0x6f;
 const LDAP_ABANDON_REQUEST: u8 = 0x50;
 const LDAP_EXTENDED_REQUEST: u8 = 0x77;
 const LDAP_EXTENDED_RESPONSE: u8 = 0x78;
-const MAX_LDAP_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
-const MAX_FILTER_DEPTH: usize = 64;
+const DEFAULT_MAX_LDAP_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
-pub struct SimpleLdapCodec;
+#[derive(Debug, Clone, Copy)]
+pub struct SimpleLdapCodec {
+    max_message_size: usize,
+}
+
+impl SimpleLdapCodec {
+    pub fn new(max_message_size: usize) -> Self {
+        Self { max_message_size }
+    }
+}
+
+impl Default for SimpleLdapCodec {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_LDAP_MESSAGE_SIZE)
+    }
+}
 
 impl SimpleLdapCodec {
     fn read_length(buf: &mut Cursor<&[u8]>) -> io::Result<usize> {
@@ -157,15 +174,40 @@ impl SimpleLdapCodec {
         buf.put_u8(value);
     }
 
-    fn read_filter(cursor: &mut Cursor<&[u8]>) -> io::Result<String> {
-        Self::read_filter_with_depth(cursor, 0)
+    fn read_filter(cursor: &mut Cursor<&[u8]>) -> io::Result<LdapFilter> {
+        Self::read_filter_with_limits(cursor, DEFAULT_FILTER_LIMITS)
     }
 
-    fn read_filter_with_depth(cursor: &mut Cursor<&[u8]>, depth: usize) -> io::Result<String> {
-        if depth > MAX_FILTER_DEPTH {
+    fn read_filter_with_limits(
+        cursor: &mut Cursor<&[u8]>,
+        limits: FilterLimits,
+    ) -> io::Result<LdapFilter> {
+        let mut nodes = 0;
+        Self::read_filter_with_depth(cursor, 0, &mut nodes, limits)
+    }
+
+    fn read_filter_with_depth(
+        cursor: &mut Cursor<&[u8]>,
+        depth: usize,
+        nodes: &mut usize,
+        limits: FilterLimits,
+    ) -> io::Result<LdapFilter> {
+        if depth > limits.max_depth {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "LDAP filter nesting limit exceeded",
+            ));
+        }
+        *nodes = nodes.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LDAP filter node count overflow",
+            )
+        })?;
+        if *nodes > limits.max_nodes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LDAP filter node limit exceeded",
             ));
         }
         if cursor.remaining() < 1 {
@@ -202,120 +244,151 @@ impl SimpleLdapCodec {
 
         let filter = match tag {
             0xA0 => {
-                // AND filter
                 let mut filters = Vec::new();
                 while cursor.position() < end_pos {
-                    filters.push(Self::read_filter_with_depth(cursor, depth + 1)?);
+                    filters.push(Self::read_filter_with_depth(
+                        cursor,
+                        depth + 1,
+                        nodes,
+                        limits,
+                    )?);
                 }
-                Ok(format!("(&{})", filters.join("")))
+                if filters.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "AND filter must contain at least one component",
+                    ));
+                }
+                Ok(LdapFilter::And(filters))
             }
             0xA1 => {
-                // OR filter
                 let mut filters = Vec::new();
                 while cursor.position() < end_pos {
-                    filters.push(Self::read_filter_with_depth(cursor, depth + 1)?);
+                    filters.push(Self::read_filter_with_depth(
+                        cursor,
+                        depth + 1,
+                        nodes,
+                        limits,
+                    )?);
                 }
-                Ok(format!("(|{})", filters.join("")))
+                if filters.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "OR filter must contain at least one component",
+                    ));
+                }
+                Ok(LdapFilter::Or(filters))
             }
             0xA2 => {
-                // NOT filter
-                let filter = Self::read_filter_with_depth(cursor, depth + 1)?;
+                let filter = Self::read_filter_with_depth(cursor, depth + 1, nodes, limits)?;
                 if cursor.position() != end_pos {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "NOT filter must contain exactly one component",
                     ));
                 }
-                Ok(format!("(!{})", filter))
+                Ok(LdapFilter::Not(Box::new(filter)))
             }
             0xA3 => {
-                // Equality Match: (attr=value)
                 let attr = Self::read_string(cursor)?;
                 let value = Self::read_string(cursor)?;
-                Ok(format!("({}={})", attr, escape_filter_value(&value)))
+                Ok(LdapFilter::Equality(attr, value))
             }
             0xA4 => {
-                // Substring filter: (attr=*value*)
                 let attr = Self::read_string(cursor)?;
+                if cursor.position() >= end_pos || cursor.get_u8() != 0x30 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Expected SEQUENCE for substring components",
+                    ));
+                }
+                let sequence_length = Self::read_length(cursor)?;
+                let sequence_end = cursor
+                    .position()
+                    .checked_add(sequence_length as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Substring sequence length overflow",
+                        )
+                    })?;
+                if sequence_end > end_pos {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "Substring sequence exceeds the enclosing filter",
+                    ));
+                }
 
-                // Read substring components
-                if cursor.position() < end_pos
-                    && cursor.get_ref()[cursor.position() as usize] == 0x30
-                {
-                    cursor.get_u8(); // SEQUENCE tag
-                    let _seq_len = Self::read_length(cursor)?;
+                let mut initial = None;
+                let mut any = Vec::new();
+                let mut final_ = None;
+                while cursor.position() < sequence_end {
+                    let sub_tag = cursor.get_u8();
+                    let sub_len = Self::read_length(cursor)?;
+                    if cursor.position() + sub_len as u64 > sequence_end {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "Substring component exceeds its sequence",
+                        ));
+                    }
+                    let mut bytes = vec![0u8; sub_len];
+                    cursor.copy_to_slice(&mut bytes);
+                    let value = String::from_utf8(bytes)
+                        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
 
-                    let mut parts = Vec::new();
-                    let mut has_initial = false;
-                    let mut has_final = false;
-
-                    while cursor.position() < end_pos {
-                        let sub_tag = cursor.get_u8();
-                        let sub_len = Self::read_length(cursor)?;
-                        if cursor.remaining() < sub_len {
+                    match sub_tag {
+                        0x80 if initial.is_none() && any.is_empty() && final_.is_none() => {
+                            initial = Some(value);
+                        }
+                        0x81 if final_.is_none() => any.push(value),
+                        0x82 if final_.is_none() => final_ = Some(value),
+                        0x80..=0x82 => {
                             return Err(io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                format!(
-                                    "Not enough bytes for substring: need {} but only {} available",
-                                    sub_len,
-                                    cursor.remaining()
-                                ),
+                                io::ErrorKind::InvalidData,
+                                "Invalid substring component order or duplicate",
                             ));
                         }
-                        let mut bytes = vec![0u8; sub_len];
-                        cursor.copy_to_slice(&mut bytes);
-                        let value = String::from_utf8(bytes).map_err(|_| {
-                            io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
-                        })?;
-                        let value = escape_filter_value(&value);
-
-                        match sub_tag {
-                            0x80 => {
-                                // initial
-                                has_initial = true;
-                                parts.insert(0, value);
-                            }
-                            0x81 => {
-                                // any
-                                parts.push(format!("*{}", value));
-                            }
-                            0x82 => {
-                                // final
-                                has_final = true;
-                                parts.push(format!("*{}", value));
-                            }
-                            _ => {}
+                        _ => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("Unsupported substring component tag: 0x{sub_tag:02x}"),
+                            ));
                         }
                     }
-
-                    let mut filter = format!("({}=", attr);
-                    if !has_initial {
-                        filter.push('*');
-                    }
-                    filter.push_str(&parts.join(""));
-                    if !has_final {
-                        filter.push('*');
-                    }
-                    filter.push(')');
-                    Ok(filter)
-                } else {
-                    Ok(format!("({}=*)", attr))
                 }
+                if cursor.position() != sequence_end || sequence_end != end_pos {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Substring sequence length mismatch",
+                    ));
+                }
+                if initial.is_none() && any.is_empty() && final_.is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Substring filter must contain at least one component",
+                    ));
+                }
+
+                Ok(LdapFilter::Substring(
+                    attr,
+                    SubstringFilter {
+                        initial,
+                        any,
+                        final_,
+                    },
+                ))
             }
             0xA5 => {
-                // Greater or Equal: (attr>=value)
                 let attr = Self::read_string(cursor)?;
                 let value = Self::read_string(cursor)?;
-                Ok(format!("({}>={})", attr, escape_filter_value(&value)))
+                Ok(LdapFilter::GreaterOrEqual(attr, value))
             }
             0xA6 => {
-                // Less or Equal: (attr<=value)
                 let attr = Self::read_string(cursor)?;
                 let value = Self::read_string(cursor)?;
-                Ok(format!("({}<={})", attr, escape_filter_value(&value)))
+                Ok(LdapFilter::LessOrEqual(attr, value))
             }
             0x87 => {
-                // Present: (attr=*)
                 if cursor.remaining() < length {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
@@ -330,20 +403,19 @@ impl SimpleLdapCodec {
                 cursor.copy_to_slice(&mut bytes);
                 let attr = String::from_utf8(bytes)
                     .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
-                Ok(format!("({}=*)", attr))
+                Ok(LdapFilter::Present(attr))
             }
             0xA8 => {
-                // Approximate Match: (attr~=value)
                 let attr = Self::read_string(cursor)?;
                 let value = Self::read_string(cursor)?;
-                Ok(format!("({}~={})", attr, escape_filter_value(&value)))
+                Ok(LdapFilter::Approximate(attr, value))
             }
             0xA9 => {
-                // Extensible Match
                 let mut matching_rule = None;
                 let mut attr_type = None;
-                let mut match_value = String::new();
+                let mut match_value = None;
                 let mut dn_attributes = false;
+                let mut saw_dn_attributes = false;
 
                 while cursor.position() < end_pos {
                     if cursor.remaining() < 1 {
@@ -351,6 +423,12 @@ impl SimpleLdapCodec {
                     }
                     let tag = cursor.get_u8();
                     let len = Self::read_length(cursor)?;
+                    if cursor.position().saturating_add(len as u64) > end_pos {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "Extensible component exceeds the enclosing filter",
+                        ));
+                    }
 
                     match tag {
                         0x81 => {
@@ -363,9 +441,15 @@ impl SimpleLdapCodec {
                             }
                             let mut bytes = vec![0u8; len];
                             cursor.copy_to_slice(&mut bytes);
-                            matching_rule = Some(String::from_utf8(bytes).map_err(|_| {
+                            let value = String::from_utf8(bytes).map_err(|_| {
                                 io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
-                            })?);
+                            })?;
+                            if matching_rule.replace(value).is_some() {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "Duplicate extensible matching rule",
+                                ));
+                            }
                         }
                         0x82 => {
                             // type [2]
@@ -377,9 +461,15 @@ impl SimpleLdapCodec {
                             }
                             let mut bytes = vec![0u8; len];
                             cursor.copy_to_slice(&mut bytes);
-                            attr_type = Some(String::from_utf8(bytes).map_err(|_| {
+                            let value = String::from_utf8(bytes).map_err(|_| {
                                 io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
-                            })?);
+                            })?;
+                            if attr_type.replace(value).is_some() {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "Duplicate extensible attribute type",
+                                ));
+                            }
                         }
                         0x83 => {
                             // matchValue [3]
@@ -391,45 +481,54 @@ impl SimpleLdapCodec {
                             }
                             let mut bytes = vec![0u8; len];
                             cursor.copy_to_slice(&mut bytes);
-                            match_value = String::from_utf8(bytes).map_err(|_| {
+                            let value = String::from_utf8(bytes).map_err(|_| {
                                 io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
                             })?;
-                        }
-                        0x84 => {
-                            // dnAttributes [4] - BOOLEAN
-                            if len == 1 {
-                                dn_attributes = cursor.get_u8() != 0x00;
-                            }
-                        }
-                        _ => {
-                            // Skip unknown tags
-                            if cursor.remaining() < len {
+                            if match_value.replace(value).is_some() {
                                 return Err(io::Error::new(
-                                    io::ErrorKind::UnexpectedEof,
-                                    "Extensible filter component exceeds message",
+                                    io::ErrorKind::InvalidData,
+                                    "Duplicate extensible match value",
                                 ));
                             }
-                            cursor.advance(len);
+                        }
+                        0x84 => {
+                            if saw_dn_attributes || len != 1 || cursor.remaining() < 1 {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "Invalid or duplicate extensible dnAttributes value",
+                                ));
+                            }
+                            saw_dn_attributes = true;
+                            dn_attributes = cursor.get_u8() != 0x00;
+                        }
+                        _ => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("Unsupported extensible filter tag: 0x{tag:02x}"),
+                            ));
                         }
                     }
                 }
 
-                // Construct extensible filter string
-                let mut filter = String::from("(");
-                if let Some(attr) = attr_type {
-                    filter.push_str(&attr);
+                let value = match_value.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Extensible filter is missing matchValue",
+                    )
+                })?;
+                if attr_type.is_none() && matching_rule.is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Extensible filter requires an attribute type or matching rule",
+                    ));
                 }
-                if dn_attributes {
-                    filter.push_str(":dn");
-                }
-                if let Some(rule) = matching_rule {
-                    filter.push(':');
-                    filter.push_str(&rule);
-                }
-                filter.push_str(":=");
-                filter.push_str(&escape_filter_value(&match_value));
-                filter.push(')');
-                Ok(filter)
+
+                Ok(LdapFilter::Extensible(ExtensibleFilter {
+                    attribute: attr_type,
+                    matching_rule,
+                    value,
+                    dn_attributes,
+                }))
             }
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -447,24 +546,8 @@ impl SimpleLdapCodec {
         Ok(filter)
     }
 }
-
-fn escape_filter_value(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '\0' => escaped.push_str("\\00"),
-            '(' => escaped.push_str("\\28"),
-            ')' => escaped.push_str("\\29"),
-            '*' => escaped.push_str("\\2a"),
-            '\\' => escaped.push_str("\\5c"),
-            _ => escaped.push(character),
-        }
-    }
-    escaped
-}
-
 impl Decoder for SimpleLdapCodec {
-    type Item = LdapMessage;
+    type Item = LdapRequestMessage;
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -504,12 +587,12 @@ impl Decoder for SimpleLdapCodec {
             (length, 2 + num_octets)
         };
 
-        if msg_length > MAX_LDAP_MESSAGE_SIZE {
+        if msg_length > self.max_message_size {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
                     "LDAP message exceeds the {} byte limit",
-                    MAX_LDAP_MESSAGE_SIZE
+                    self.max_message_size
                 ),
             ));
         }
@@ -591,7 +674,11 @@ impl Decoder for SimpleLdapCodec {
                             let password = String::from_utf8(pass_bytes).map_err(|_| {
                                 io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
                             })?;
-                            BindAuthentication::Simple(password)
+                            if dn.is_empty() && password.is_empty() {
+                                BindAuthentication::Anonymous
+                            } else {
+                                BindAuthentication::Simple(password)
+                            }
                         }
                         0xA3 => {
                             // sasl [3] SaslCredentials
@@ -692,14 +779,14 @@ impl Decoder for SimpleLdapCodec {
                     ));
                 }
 
-                LdapProtocolOp::BindRequest {
+                LdapRequest::BindRequest {
                     version,
                     dn,
                     authentication: auth,
                 }
             }
 
-            LDAP_UNBIND_REQUEST => LdapProtocolOp::UnbindRequest,
+            LDAP_UNBIND_REQUEST => LdapRequest::UnbindRequest,
 
             LDAP_SEARCH_REQUEST => {
                 // Read search request length
@@ -799,7 +886,7 @@ impl Decoder for SimpleLdapCodec {
                     }
                 }
 
-                LdapProtocolOp::SearchRequest {
+                LdapRequest::SearchRequest {
                     base_dn,
                     scope,
                     deref_aliases,
@@ -838,7 +925,7 @@ impl Decoder for SimpleLdapCodec {
                     String::new()
                 };
 
-                LdapProtocolOp::CompareRequest {
+                LdapRequest::CompareRequest {
                     dn,
                     attribute,
                     value,
@@ -863,7 +950,7 @@ impl Decoder for SimpleLdapCodec {
                     abandon_message_id = (abandon_message_id << 8) | (cursor.get_u8() as u32);
                 }
 
-                LdapProtocolOp::AbandonRequest {
+                LdapRequest::AbandonRequest {
                     message_id: abandon_message_id,
                 }
             }
@@ -921,7 +1008,7 @@ impl Decoder for SimpleLdapCodec {
                     None
                 };
 
-                LdapProtocolOp::ExtendedRequest { name, value }
+                LdapRequest::ExtendedRequest { name, value }
             }
 
             _ => {
@@ -934,17 +1021,17 @@ impl Decoder for SimpleLdapCodec {
 
         src.advance(total_len);
 
-        Ok(Some(LdapMessage {
+        Ok(Some(LdapRequestMessage {
             message_id,
             protocol_op,
         }))
     }
 }
 
-impl Encoder<LdapMessage> for SimpleLdapCodec {
+impl Encoder<LdapResponseMessage> for SimpleLdapCodec {
     type Error = io::Error;
 
-    fn encode(&mut self, item: LdapMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, item: LdapResponseMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
         // Reserve space for the message
         dst.reserve(256);
 
@@ -956,7 +1043,7 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
 
         // Write protocol operation
         match item.protocol_op {
-            LdapProtocolOp::BindResponse { ref result } => {
+            LdapResponse::BindResponse { ref result } => {
                 // Start bind response
                 let mut bind_content = BytesMut::new();
 
@@ -975,7 +1062,7 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
                 content.put(bind_content);
             }
 
-            LdapProtocolOp::SearchResultEntry {
+            LdapResponse::SearchResultEntry {
                 ref dn,
                 ref attributes,
             } => {
@@ -1020,7 +1107,7 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
                 content.put(entry_content);
             }
 
-            LdapProtocolOp::SearchResultDone { ref result } => {
+            LdapResponse::SearchResultDone { ref result } => {
                 let mut done_content = BytesMut::new();
 
                 // Write result code
@@ -1038,7 +1125,7 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
                 content.put(done_content);
             }
 
-            LdapProtocolOp::CompareResponse { ref result } => {
+            LdapResponse::CompareResponse { ref result } => {
                 let mut response_content = BytesMut::new();
 
                 // Write result code
@@ -1056,7 +1143,7 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
                 content.put(response_content);
             }
 
-            LdapProtocolOp::ExtendedResponse {
+            LdapResponse::ExtendedResponse {
                 ref result,
                 ref name,
                 ref value,
@@ -1090,13 +1177,6 @@ impl Encoder<LdapMessage> for SimpleLdapCodec {
                 content.put_u8(LDAP_EXTENDED_RESPONSE);
                 Self::write_length(&mut content, response_content.len());
                 content.put(response_content);
-            }
-
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Unsupported operation for encoding",
-                ));
             }
         }
 
@@ -1235,7 +1315,7 @@ mod tests {
 
     #[test]
     fn test_decode_empty_buffer() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
         let result = codec.decode(&mut buf).unwrap();
         assert!(result.is_none());
@@ -1243,7 +1323,7 @@ mod tests {
 
     #[test]
     fn test_decode_partial_message() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::from(&[0x30, 0x10][..]); // SEQUENCE with length 16 but no content
         let result = codec.decode(&mut buf).unwrap();
         assert!(result.is_none());
@@ -1251,7 +1331,7 @@ mod tests {
 
     #[test]
     fn test_decode_invalid_sequence_tag() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::from(&[0x31, 0x02, 0x00, 0x00, 0x00][..]); // Wrong tag with 5 bytes
         let result = codec.decode(&mut buf);
         assert!(result.is_err());
@@ -1259,33 +1339,13 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_bind_request() {
-        let mut codec = SimpleLdapCodec;
-        let mut buf = BytesMut::new();
-
-        let msg = LdapMessage {
-            message_id: 1,
-            protocol_op: LdapProtocolOp::BindRequest {
-                version: 3,
-                dn: "".to_string(), // Anonymous bind
-                authentication: BindAuthentication::Anonymous,
-            },
-        };
-
-        // BindRequest encoding is not implemented in SimpleLdapCodec
-        let result = codec.encode(msg, &mut buf);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
-    }
-
-    #[test]
     fn test_encode_bind_response() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
-        let msg = LdapMessage {
+        let msg = LdapResponseMessage {
             message_id: 1,
-            protocol_op: LdapProtocolOp::BindResponse {
+            protocol_op: LdapResponse::BindResponse {
                 result: LdapResult::success(),
             },
         };
@@ -1297,15 +1357,15 @@ mod tests {
 
     #[test]
     fn test_encode_search_result_entry() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         let mut attrs = HashMap::new();
         attrs.insert("cn".to_string(), vec!["test".to_string()]);
 
-        let msg = LdapMessage {
+        let msg = LdapResponseMessage {
             message_id: 2,
-            protocol_op: LdapProtocolOp::SearchResultEntry {
+            protocol_op: LdapResponse::SearchResultEntry {
                 dn: "cn=test,dc=example,dc=com".to_string(),
                 attributes: attrs,
             },
@@ -1318,12 +1378,12 @@ mod tests {
 
     #[test]
     fn test_encode_search_result_done() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
-        let msg = LdapMessage {
+        let msg = LdapResponseMessage {
             message_id: 3,
-            protocol_op: LdapProtocolOp::SearchResultDone {
+            protocol_op: LdapResponse::SearchResultDone {
                 result: LdapResult::error(LdapResultCode::NoSuchObject, "Not found".to_string()),
             },
         };
@@ -1334,28 +1394,13 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_unsupported_operation() {
-        let mut codec = SimpleLdapCodec;
-        let mut buf = BytesMut::new();
-
-        let msg = LdapMessage {
-            message_id: 1,
-            protocol_op: LdapProtocolOp::UnbindRequest,
-        };
-
-        let result = codec.encode(msg, &mut buf);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
-    }
-
-    #[test]
     fn test_roundtrip_bind_response() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
 
         // Encode
-        let original = LdapMessage {
+        let original = LdapResponseMessage {
             message_id: 42,
-            protocol_op: LdapProtocolOp::BindResponse {
+            protocol_op: LdapResponse::BindResponse {
                 result: LdapResult::success(),
             },
         };
@@ -1398,7 +1443,7 @@ mod tests {
 
     #[test]
     fn test_decode_with_debug_logging() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         // Create a simple bind request
@@ -1425,7 +1470,7 @@ mod tests {
 
     #[test]
     fn test_decode_bind_requires_authentication_choice() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::from(
             &[
                 0x30, 0x09, // LDAPMessage sequence
@@ -1442,7 +1487,7 @@ mod tests {
 
     #[test]
     fn test_decode_sasl_bind_request() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::from(
             &[
                 0x30, 0x1c, // LDAPMessage sequence
@@ -1459,7 +1504,7 @@ mod tests {
         let message = codec.decode(&mut buf).unwrap().unwrap();
         assert_eq!(message.message_id, 1);
         match message.protocol_op {
-            LdapProtocolOp::BindRequest {
+            LdapRequest::BindRequest {
                 version,
                 dn,
                 authentication:
@@ -1479,7 +1524,7 @@ mod tests {
 
     #[test]
     fn test_decode_sasl_bind_request_without_credentials() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::from(
             &[
                 0x30, 0x18, // LDAPMessage sequence
@@ -1495,7 +1540,7 @@ mod tests {
         let message = codec.decode(&mut buf).unwrap().unwrap();
         assert!(matches!(
             message.protocol_op,
-            LdapProtocolOp::BindRequest {
+            LdapRequest::BindRequest {
                 authentication: BindAuthentication::Sasl {
                     ref mechanism,
                     credentials: None,
@@ -1507,7 +1552,7 @@ mod tests {
 
     #[test]
     fn test_decode_microsoft_sicily_bind_request() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::from(
             &[
                 0x30, 0x0f, // LDAPMessage sequence
@@ -1522,7 +1567,7 @@ mod tests {
         let message = codec.decode(&mut buf).unwrap().unwrap();
         assert!(matches!(
             message.protocol_op,
-            LdapProtocolOp::BindRequest {
+            LdapRequest::BindRequest {
                 authentication: BindAuthentication::Sicily {
                     tag: 0x8a,
                     ref credentials,
@@ -1534,7 +1579,7 @@ mod tests {
 
     #[test]
     fn test_decode_compare_request() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         // Build the compare request content first
@@ -1588,7 +1633,7 @@ mod tests {
         assert_eq!(msg.message_id, 1);
 
         match msg.protocol_op {
-            LdapProtocolOp::CompareRequest {
+            LdapRequest::CompareRequest {
                 dn,
                 attribute,
                 value,
@@ -1603,7 +1648,7 @@ mod tests {
 
     #[test]
     fn test_decode_abandon_request() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         // Create abandon request
@@ -1631,7 +1676,7 @@ mod tests {
         assert_eq!(msg.message_id, 1);
 
         match msg.protocol_op {
-            LdapProtocolOp::AbandonRequest { message_id } => {
+            LdapRequest::AbandonRequest { message_id } => {
                 assert_eq!(message_id, 5);
             }
             _ => panic!("Expected AbandonRequest"),
@@ -1640,7 +1685,7 @@ mod tests {
 
     #[test]
     fn test_decode_extended_request() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         // Create extended request for StartTLS
@@ -1678,7 +1723,7 @@ mod tests {
         assert_eq!(msg.message_id, 1);
 
         match msg.protocol_op {
-            LdapProtocolOp::ExtendedRequest { name, value } => {
+            LdapRequest::ExtendedRequest { name, value } => {
                 assert_eq!(name, "1.3.6.1.4.1.1466.20037");
                 assert!(value.is_none());
             }
@@ -1688,7 +1733,7 @@ mod tests {
 
     #[test]
     fn test_decode_malformed_message() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         // Test 1: Invalid message with wrong sequence tag
@@ -1703,7 +1748,7 @@ mod tests {
 
     #[test]
     fn test_decode_truncated_messages() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
 
         // Test truncated message ID
         let mut buf = BytesMut::new();
@@ -1719,7 +1764,7 @@ mod tests {
 
     #[test]
     fn test_decode_invalid_length_encoding() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         // Invalid long form length - 0xFF means 127 octets for length, which is invalid
@@ -1732,7 +1777,7 @@ mod tests {
 
     #[test]
     fn test_decode_oversized_message() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         // Message claiming to be larger than buffer
@@ -1748,13 +1793,61 @@ mod tests {
 
     #[test]
     fn test_decode_rejects_message_over_configured_limit() {
-        let mut codec = SimpleLdapCodec;
-        let mut buf = BytesMut::from(&b"\x30\x84\x02\x00\x00\x00"[..]);
+        let mut codec = SimpleLdapCodec::new(1_024);
+        let mut buf = BytesMut::from(&b"\x30\x82\x04\x01"[..]);
 
         let error = codec.decode(&mut buf).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn ber_and_text_decoders_produce_the_same_structural_filter() {
+        let bytes = b"\xa1\x19\xa3\x0b\x04\x02cn\x04\x05alice\xa3\x0a\x04\x03uid\x04\x03bob";
+        let mut cursor = Cursor::new(bytes.as_slice());
+
+        let ber_filter = SimpleLdapCodec::read_filter(&mut cursor).unwrap();
+        let text_filter =
+            crate::ldap::filters::parse_ldap_filter("(|(cn=alice)(uid=bob))").unwrap();
+
+        assert_eq!(ber_filter, text_filter);
+    }
+
+    #[test]
+    fn ber_filter_enforces_node_limit_and_rejects_empty_composites() {
+        let bytes = b"\xa1\x19\xa3\x0b\x04\x02cn\x04\x05alice\xa3\x0a\x04\x03uid\x04\x03bob";
+        let mut cursor = Cursor::new(bytes.as_slice());
+        let error = SimpleLdapCodec::read_filter_with_limits(
+            &mut cursor,
+            FilterLimits {
+                max_depth: 8,
+                max_nodes: 2,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("node limit"));
+
+        for bytes in [b"\xa0\x00".as_slice(), b"\xa1\x00".as_slice()] {
+            let mut cursor = Cursor::new(bytes);
+            assert_eq!(
+                SimpleLdapCodec::read_filter(&mut cursor)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[test]
+    fn ber_filter_rejects_unknown_substring_component_tag() {
+        let bytes = b"\xa4\x09\x04\x02cn\x30\x03\x83\x01x";
+        let mut cursor = Cursor::new(bytes.as_slice());
+
+        let error = SimpleLdapCodec::read_filter(&mut cursor).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("substring component tag"));
     }
 
     #[test]
@@ -1764,17 +1857,16 @@ mod tests {
 
         let filter = SimpleLdapCodec::read_filter(&mut cursor).unwrap();
 
-        assert_eq!(filter, "(cn=\\2a)");
         assert_eq!(
-            super::super::filters::parse_ldap_filter(&filter).unwrap(),
-            super::super::filters::LdapFilter::Equality("cn".to_string(), "*".to_string())
+            filter,
+            LdapFilter::Equality("cn".to_string(), "*".to_string())
         );
     }
 
     #[test]
     fn test_ber_filter_rejects_excessive_nesting() {
         let mut filter = BytesMut::from(&[0x87, 0x02, b'c', b'n'][..]);
-        for _ in 0..=MAX_FILTER_DEPTH {
+        for _ in 0..=DEFAULT_FILTER_LIMITS.max_depth {
             let mut nested = BytesMut::new();
             nested.put_u8(0xA2);
             SimpleLdapCodec::write_length(&mut nested, filter.len());
@@ -1791,13 +1883,13 @@ mod tests {
 
     #[test]
     fn test_bind_response_uses_enumerated_result_code() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
         codec
             .encode(
-                LdapMessage {
+                LdapResponseMessage {
                     message_id: 1,
-                    protocol_op: LdapProtocolOp::BindResponse {
+                    protocol_op: LdapResponse::BindResponse {
                         result: LdapResult::success(),
                     },
                 },
@@ -1814,7 +1906,7 @@ mod tests {
 
     #[test]
     fn test_decode_invalid_operation_tag() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         let mut message_content = BytesMut::new();
@@ -1840,7 +1932,7 @@ mod tests {
 
     #[test]
     fn test_decode_invalid_abandon_message_id() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         let mut message_content = BytesMut::new();
@@ -1863,12 +1955,12 @@ mod tests {
 
     #[test]
     fn test_encode_extended_response() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
 
         // Test Extended response for StartTLS
-        let msg = LdapMessage {
+        let msg = LdapResponseMessage {
             message_id: 1,
-            protocol_op: LdapProtocolOp::ExtendedResponse {
+            protocol_op: LdapResponse::ExtendedResponse {
                 result: LdapResult {
                     result_code: LdapResultCode::Unavailable,
                     matched_dn: String::new(),
@@ -1890,12 +1982,12 @@ mod tests {
 
     #[test]
     fn test_encode_compare_response() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
 
         // Test CompareTrue response
-        let msg = LdapMessage {
+        let msg = LdapResponseMessage {
             message_id: 1,
-            protocol_op: LdapProtocolOp::CompareResponse {
+            protocol_op: LdapResponse::CompareResponse {
                 result: LdapResult {
                     result_code: LdapResultCode::CompareTrue,
                     matched_dn: "cn=test,dc=com".to_string(),
@@ -1923,7 +2015,7 @@ mod tests {
 
     #[test]
     fn test_decode_search_request_with_empty_attributes() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         // Build search request with empty attributes list
@@ -1990,7 +2082,7 @@ mod tests {
         let msg = result.unwrap().unwrap();
 
         match msg.protocol_op {
-            LdapProtocolOp::SearchRequest { attributes, .. } => {
+            LdapRequest::SearchRequest { attributes, .. } => {
                 assert!(attributes.is_empty());
             }
             _ => panic!("Expected SearchRequest"),
@@ -1999,7 +2091,7 @@ mod tests {
 
     #[test]
     fn test_decode_search_request_with_special_filter() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         // Build search request with NOT filter
@@ -2107,15 +2199,20 @@ mod tests {
         let msg = result.unwrap().unwrap();
 
         match msg.protocol_op {
-            LdapProtocolOp::SearchRequest {
+            LdapRequest::SearchRequest {
                 filter,
                 types_only,
                 size_limit,
                 time_limit,
                 ..
             } => {
-                assert!(filter.contains("(!"));
-                assert!(filter.contains("cn=test"));
+                assert_eq!(
+                    filter,
+                    LdapFilter::Not(Box::new(LdapFilter::Equality(
+                        "cn".to_string(),
+                        "test".to_string(),
+                    )))
+                );
                 assert!(types_only);
                 assert_eq!(size_limit, 100);
                 assert_eq!(time_limit, 30);
@@ -2126,7 +2223,7 @@ mod tests {
 
     #[test]
     fn test_decode_extended_request_with_value() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
         let mut buf = BytesMut::new();
 
         // Create extended request with both name and value
@@ -2167,7 +2264,7 @@ mod tests {
         let msg = result.unwrap().unwrap();
 
         match msg.protocol_op {
-            LdapProtocolOp::ExtendedRequest { name, value } => {
+            LdapRequest::ExtendedRequest { name, value } => {
                 assert_eq!(name, "1.2.3.4.5");
                 assert!(value.is_some());
                 assert_eq!(value.unwrap(), b"test value data");
@@ -2178,12 +2275,12 @@ mod tests {
 
     #[test]
     fn test_encode_extended_response_with_value() {
-        let mut codec = SimpleLdapCodec;
+        let mut codec = SimpleLdapCodec::default();
 
         // Test Extended response with both name and value
-        let msg = LdapMessage {
+        let msg = LdapResponseMessage {
             message_id: 42,
-            protocol_op: LdapProtocolOp::ExtendedResponse {
+            protocol_op: LdapResponse::ExtendedResponse {
                 result: LdapResult::success(),
                 name: Some("1.2.3.4.5".to_string()),
                 value: Some(vec![0x01, 0x02, 0x03, 0x04]),

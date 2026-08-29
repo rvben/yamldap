@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use yamldap::ldap::parse_ldap_filter;
+use yamldap::unstable::parse_ldap_filter;
 
 fuzz_target!(|data: &[u8]| {
     // Convert bytes to string - if it's not valid UTF-8, that's fine

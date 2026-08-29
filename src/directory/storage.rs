@@ -1,8 +1,8 @@
+use super::dn::{attribute_types_equivalent, naming_values_equal};
 use super::entry::LdapEntry;
-use super::index::{AttributeIndex, ObjectClassIndex};
+use super::{DistinguishedName, DnKey};
 use crate::yaml::{YamlDirectory, YamlSchema};
-use dashmap::DashMap;
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -15,64 +15,92 @@ pub struct SearchEntriesResult {
 #[derive(Debug, Clone)]
 pub struct Directory {
     pub base_dn: String,
-    entries: Arc<DashMap<String, LdapEntry>>,
+    entries: HashMap<DnKey, LdapEntry>,
+    #[cfg_attr(not(feature = "unstable-internals"), allow(dead_code))]
     pub schema: YamlSchema,
-    // Indexes for fast lookups
-    uid_index: AttributeIndex,
-    cn_index: AttributeIndex,
-    objectclass_index: ObjectClassIndex,
 }
 
 impl Directory {
-    pub fn new(base_dn: String, schema: YamlSchema) -> Self {
+    fn empty(base_dn: String, schema: YamlSchema) -> Self {
         Self {
             base_dn,
-            entries: Arc::new(DashMap::new()),
+            entries: HashMap::new(),
             schema,
-            uid_index: AttributeIndex::new(),
-            cn_index: AttributeIndex::new(),
-            objectclass_index: ObjectClassIndex::new(),
         }
     }
 
-    pub fn from_yaml(yaml_dir: YamlDirectory, schema: YamlSchema) -> Self {
-        let dir = Self::new(yaml_dir.directory.base_dn, schema);
+    #[cfg(test)]
+    pub(crate) fn new(base_dn: String, schema: YamlSchema) -> Self {
+        Self::empty(base_dn, schema)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_yaml(yaml_dir: YamlDirectory, schema: YamlSchema) -> Self {
+        Self::try_from_yaml(yaml_dir, schema)
+            .expect("invalid YAML directory passed to infallible compatibility conversion")
+    }
+
+    pub(crate) fn try_from_yaml(
+        yaml_dir: YamlDirectory,
+        schema: YamlSchema,
+    ) -> crate::Result<Self> {
+        let base_dn = DistinguishedName::parse(&yaml_dir.directory.base_dn)
+            .map_err(|error| crate::YamlLdapError::Config(format!("Invalid base DN: {error}")))?;
+        if base_dn.is_empty() {
+            return Err(crate::YamlLdapError::Config(
+                "Base DN cannot be empty".to_string(),
+            ));
+        }
+        let mut dir = Self::empty(yaml_dir.directory.base_dn, schema.clone());
 
         for yaml_entry in yaml_dir.entries {
-            let entry: LdapEntry = yaml_entry.into();
-            dir.add_entry(entry);
+            let entry = LdapEntry::try_from_yaml(yaml_entry, &schema)?;
+            let parsed_dn = DistinguishedName::parse(&entry.dn).map_err(|error| {
+                crate::YamlLdapError::Config(format!(
+                    "Entry {} has an invalid DN: {error}",
+                    entry.dn
+                ))
+            })?;
+            if !parsed_dn.is_equal_to_or_descendant_of(&base_dn) {
+                return Err(crate::YamlLdapError::Config(format!(
+                    "Entry {} is outside base DN {}",
+                    entry.dn, dir.base_dn
+                )));
+            }
+            validate_rdn_values(&entry, &parsed_dn)?;
+            dir.insert_entry(entry)?;
         }
 
-        dir
+        Ok(dir)
     }
 
-    pub fn add_entry(&self, entry: LdapEntry) {
-        let dn_lower = entry.dn.to_lowercase();
+    #[cfg(test)]
+    pub(crate) fn add_entry(&mut self, entry: LdapEntry) {
+        self.insert_entry(entry)
+            .expect("invalid entry passed to infallible compatibility insertion");
+    }
 
-        // Update indexes
-        if let Some(uid_attr) = entry.get_attribute("uid") {
-            for value in &uid_attr.values {
-                self.uid_index.insert("uid", &value.as_string(), &dn_lower);
-            }
+    fn insert_entry(&mut self, entry: LdapEntry) -> crate::Result<()> {
+        let parsed_dn = DistinguishedName::parse(&entry.dn).map_err(|error| {
+            crate::YamlLdapError::Directory(format!("Invalid entry DN {}: {error}", entry.dn))
+        })?;
+        let dn_key = parsed_dn.key();
+        if self.entries.contains_key(&dn_key) {
+            return Err(crate::YamlLdapError::Directory(format!(
+                "Duplicate distinguished name: {}",
+                entry.dn
+            )));
         }
-
-        if let Some(cn_attr) = entry.get_attribute("cn") {
-            for value in &cn_attr.values {
-                self.cn_index.insert("cn", &value.as_string(), &dn_lower);
-            }
-        }
-
-        for oc in &entry.object_classes {
-            self.objectclass_index.insert(oc, &dn_lower);
-        }
-
-        self.entries.insert(dn_lower, entry);
+        self.entries.insert(dn_key, entry);
+        Ok(())
     }
 
     pub fn get_entry(&self, dn: &str) -> Option<LdapEntry> {
-        self.entries.get(&dn.to_lowercase()).map(|e| e.clone())
+        let key = DistinguishedName::parse(dn).ok()?.key();
+        self.entries.get(&key).cloned()
     }
 
+    #[cfg(any(test, feature = "unstable-internals"))]
     pub fn search_entries<F>(&self, base_dn: &str, scope: SearchScope, filter: F) -> Vec<LdapEntry>
     where
         F: Fn(&LdapEntry) -> bool,
@@ -92,34 +120,38 @@ impl Directory {
     where
         F: Fn(&LdapEntry) -> bool,
     {
-        let base_dn_lower = base_dn.to_lowercase();
+        let Ok(base_dn) = DistinguishedName::parse(base_dn) else {
+            return SearchEntriesResult {
+                entries: Vec::new(),
+                size_limit_exceeded: false,
+                time_limit_exceeded: false,
+            };
+        };
+        let base_key = base_dn.key();
         let mut results = Vec::new();
         let started_at = Instant::now();
         let mut size_limit_exceeded = false;
         let mut time_limit_exceeded = false;
 
-        for entry in self.entries.iter() {
+        for (entry_key, entry) in &self.entries {
             if time_limit.is_some_and(|limit| started_at.elapsed() >= limit) {
                 time_limit_exceeded = true;
                 break;
             }
 
-            let entry_dn_lower = entry.key().to_lowercase();
-
+            let Ok(entry_dn) = DistinguishedName::parse(&entry.dn) else {
+                continue;
+            };
             // Check if entry is in scope
             let in_scope = match scope {
-                SearchScope::BaseObject => entry_dn_lower == base_dn_lower,
-                SearchScope::SingleLevel => {
-                    entry_dn_lower != base_dn_lower
-                        && is_direct_child(&entry_dn_lower, &base_dn_lower)
-                }
+                SearchScope::BaseObject => entry_key == &base_key,
+                SearchScope::SingleLevel => entry_dn.is_direct_child_of(&base_dn),
                 SearchScope::WholeSubtree => {
-                    entry_dn_lower == base_dn_lower
-                        || is_descendant(&entry_dn_lower, &base_dn_lower)
+                    entry_key == &base_key || entry_dn.is_descendant_of(&base_dn)
                 }
             };
 
-            if in_scope && filter(&entry) {
+            if in_scope && filter(entry) {
                 if size_limit.is_some_and(|limit| results.len() >= limit) {
                     size_limit_exceeded = true;
                     break;
@@ -135,8 +167,11 @@ impl Directory {
         }
     }
 
+    #[cfg(any(test, feature = "unstable-internals"))]
     pub fn entry_exists(&self, dn: &str) -> bool {
-        self.entries.contains_key(&dn.to_lowercase())
+        DistinguishedName::parse(dn)
+            .map(|dn| self.entries.contains_key(&dn.key()))
+            .unwrap_or(false)
     }
 
     /// Get all attributes that exist in any entry in the directory
@@ -148,7 +183,7 @@ impl Directory {
         attributes.insert("dn".to_string());
 
         // Collect attributes from all entries
-        for entry in self.entries.iter() {
+        for entry in self.entries.values() {
             for attr_name in entry.attributes.keys() {
                 attributes.insert(attr_name.to_lowercase());
             }
@@ -158,6 +193,44 @@ impl Directory {
     }
 }
 
+fn validate_rdn_values(entry: &LdapEntry, dn: &DistinguishedName) -> crate::Result<()> {
+    let Some(rdn) = dn.leaf_rdn() else {
+        return Err(crate::YamlLdapError::Config(
+            "Directory entries cannot use the empty DN".to_string(),
+        ));
+    };
+    for ava in rdn.avas() {
+        let Some(expected) = ava.text_value() else {
+            // BER-form AVAs need schema-specific decoding. They remain valid DN
+            // syntax but cannot be checked against the YAML lexical values here.
+            continue;
+        };
+        let attribute = entry
+            .attributes
+            .values()
+            .find(|attribute| attribute_types_equivalent(&attribute.name, ava.attribute()))
+            .ok_or_else(|| {
+                crate::YamlLdapError::Config(format!(
+                    "Entry {} is missing RDN attribute {}",
+                    entry.dn,
+                    ava.attribute()
+                ))
+            })?;
+        if !attribute
+            .values
+            .iter()
+            .any(|value| naming_values_equal(&value.as_string(), expected))
+        {
+            return Err(crate::YamlLdapError::Config(format!(
+                "Entry {} RDN value for {} is not present in the entry",
+                entry.dn,
+                ava.attribute()
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SearchScope {
     BaseObject,
@@ -165,31 +238,26 @@ pub enum SearchScope {
     WholeSubtree,
 }
 
+#[cfg(test)]
 fn is_direct_child(child_dn: &str, parent_dn: &str) -> bool {
-    if parent_dn.is_empty() || !child_dn.ends_with(parent_dn) {
+    let Ok(child) = DistinguishedName::parse(child_dn) else {
         return false;
-    }
-
-    let prefix = &child_dn[..child_dn.len() - parent_dn.len()];
-    if prefix.is_empty() {
+    };
+    let Ok(parent) = DistinguishedName::parse(parent_dn) else {
         return false;
-    }
-
-    if !prefix.ends_with(',') {
-        return false;
-    }
-
-    // Remove the DN separator.
-    let prefix = prefix.trim_end_matches(',');
-
-    // Check if there's only one RDN component
-    !prefix.contains(',')
+    };
+    !parent.is_empty() && child.is_direct_child_of(&parent)
 }
 
+#[cfg(test)]
 fn is_descendant(child_dn: &str, parent_dn: &str) -> bool {
-    child_dn
-        .strip_suffix(parent_dn)
-        .is_some_and(|prefix| prefix.ends_with(','))
+    let Ok(child) = DistinguishedName::parse(child_dn) else {
+        return false;
+    };
+    let Ok(parent) = DistinguishedName::parse(parent_dn) else {
+        return false;
+    };
+    child.is_descendant_of(&parent)
 }
 
 #[cfg(test)]
@@ -253,7 +321,7 @@ mod tests {
     #[test]
     fn test_directory_add_and_get_entry() {
         let schema = YamlSchema::default();
-        let directory = Directory::new("dc=test,dc=com".to_string(), schema);
+        let mut directory = Directory::new("dc=test,dc=com".to_string(), schema);
 
         let mut entry = LdapEntry::new("cn=test,dc=test,dc=com".to_string());
         entry.add_attribute(
@@ -284,7 +352,7 @@ mod tests {
     #[test]
     fn test_directory_search_base_object() {
         let schema = YamlSchema::default();
-        let directory = Directory::new("dc=test,dc=com".to_string(), schema);
+        let mut directory = Directory::new("dc=test,dc=com".to_string(), schema);
 
         let mut entry = LdapEntry::new("cn=test,dc=test,dc=com".to_string());
         entry.add_attribute(
@@ -311,7 +379,7 @@ mod tests {
     #[test]
     fn test_directory_search_single_level() {
         let schema = YamlSchema::default();
-        let directory = Directory::new("dc=test,dc=com".to_string(), schema);
+        let mut directory = Directory::new("dc=test,dc=com".to_string(), schema);
 
         // Add parent
         let parent = LdapEntry::new("ou=users,dc=test,dc=com".to_string());
@@ -337,7 +405,7 @@ mod tests {
     #[test]
     fn test_directory_search_whole_subtree() {
         let schema = YamlSchema::default();
-        let directory = Directory::new("dc=test,dc=com".to_string(), schema);
+        let mut directory = Directory::new("dc=test,dc=com".to_string(), schema);
 
         // Add base
         let base = LdapEntry::new("dc=test,dc=com".to_string());
@@ -364,7 +432,7 @@ mod tests {
     #[test]
     fn test_directory_search_with_filter() {
         let schema = YamlSchema::default();
-        let directory = Directory::new("dc=test,dc=com".to_string(), schema);
+        let mut directory = Directory::new("dc=test,dc=com".to_string(), schema);
 
         let mut entry1 = LdapEntry::new("cn=user1,dc=test,dc=com".to_string());
         entry1.add_attribute(
@@ -401,7 +469,7 @@ mod tests {
 
     #[test]
     fn test_directory_search_reports_expired_time_limit() {
-        let directory = Directory::new("dc=test,dc=com".to_string(), YamlSchema::default());
+        let mut directory = Directory::new("dc=test,dc=com".to_string(), YamlSchema::default());
         directory.add_entry(LdapEntry::new("dc=test,dc=com".to_string()));
 
         let result = directory.search_entries_with_limits(
@@ -431,7 +499,7 @@ mod tests {
                 object_class: vec!["person".to_string()],
                 attributes: [(
                     "cn".to_string(),
-                    serde_yaml::Value::String("test".to_string()),
+                    serde_yaml_ng::Value::String("test".to_string()),
                 )]
                 .into_iter()
                 .collect(),
@@ -451,7 +519,7 @@ mod tests {
     #[test]
     fn test_directory_indexing() {
         let schema = YamlSchema::default();
-        let directory = Directory::new("dc=test,dc=com".to_string(), schema);
+        let mut directory = Directory::new("dc=test,dc=com".to_string(), schema);
 
         let mut entry = LdapEntry::new("cn=indexed,dc=test,dc=com".to_string());
         entry.add_attribute(
@@ -506,7 +574,7 @@ mod tests {
                         let mut attrs = HashMap::new();
                         attrs.insert(
                             "dc".to_string(),
-                            serde_yaml::Value::String("example".to_string()),
+                            serde_yaml_ng::Value::String("example".to_string()),
                         );
                         attrs
                     },
@@ -518,7 +586,7 @@ mod tests {
                         let mut attrs = HashMap::new();
                         attrs.insert(
                             "cn".to_string(),
-                            serde_yaml::Value::String("admin".to_string()),
+                            serde_yaml_ng::Value::String("admin".to_string()),
                         );
                         attrs
                     },
@@ -546,7 +614,7 @@ mod tests {
     #[test]
     fn test_entry_exists() {
         let schema = YamlSchema::default();
-        let directory = Directory::new("dc=test,dc=com".to_string(), schema);
+        let mut directory = Directory::new("dc=test,dc=com".to_string(), schema);
 
         // Initially no entries
         assert!(!directory.entry_exists("cn=test,dc=test,dc=com"));
@@ -591,90 +659,69 @@ mod tests {
         assert!(!is_descendant("dc=com", "dc=example,dc=com"));
     }
 
+    #[test]
+    fn escaped_comma_is_one_rdn_for_scope() {
+        assert!(is_direct_child(
+            r"cn=Smith\, John,ou=people,dc=example,dc=com",
+            "ou=people,dc=example,dc=com"
+        ));
+        assert!(is_descendant(
+            r"cn=Smith\, John,ou=people,dc=example,dc=com",
+            "dc=example,dc=com"
+        ));
+    }
+
+    #[test]
+    fn lookup_uses_semantic_dn_identity() {
+        let mut directory = Directory::new("dc=example,dc=com".to_string(), YamlSchema::default());
+        let mut entry = LdapEntry::new("OU=Sales+CN=J. Smith,DC=example,DC=com".to_string());
+        entry.add_attribute(
+            "cn".to_string(),
+            vec![crate::directory::AttributeValue::String(
+                "J. Smith".to_string(),
+            )],
+            crate::directory::AttributeSyntax::String,
+        );
+        directory.add_entry(entry);
+
+        assert!(directory
+            .entry_exists("cn=j. smith+ou=sales,0.9.2342.19200300.100.1.25=example,dc=com"));
+    }
+
     #[tokio::test]
-    async fn test_directory_concurrent_operations() {
+    async fn test_directory_concurrent_reads() {
         use std::sync::Arc;
         use tokio::task::JoinSet;
 
         let schema = YamlSchema::default();
-        let directory = Arc::new(Directory::new("dc=test,dc=com".to_string(), schema));
-
+        let mut directory = Directory::new("dc=test,dc=com".to_string(), schema);
+        for i in 0..15 {
+            let mut entry = LdapEntry::new(format!("cn=user{},dc=test,dc=com", i));
+            entry.add_attribute(
+                "cn".to_string(),
+                vec![crate::directory::entry::AttributeValue::String(format!(
+                    "user{}",
+                    i
+                ))],
+                crate::directory::entry::AttributeSyntax::String,
+            );
+            directory.add_entry(entry);
+        }
+        let directory = Arc::new(directory);
         let mut tasks = JoinSet::new();
 
-        // Spawn multiple tasks to add entries concurrently
-        for i in 0..10 {
-            let dir = Arc::clone(&directory);
-            tasks.spawn(async move {
-                let mut entry = LdapEntry::new(format!("cn=user{},dc=test,dc=com", i));
-                entry.add_attribute(
-                    "cn".to_string(),
-                    vec![crate::directory::entry::AttributeValue::String(format!(
-                        "user{}",
-                        i
-                    ))],
-                    crate::directory::entry::AttributeSyntax::String,
-                );
-                entry.add_attribute(
-                    "uid".to_string(),
-                    vec![crate::directory::entry::AttributeValue::String(format!(
-                        "uid{}",
-                        i
-                    ))],
-                    crate::directory::entry::AttributeSyntax::String,
-                );
-                dir.add_entry(entry);
-            });
-        }
-
-        // Wait for all tasks to complete
-        while let Some(result) = tasks.join_next().await {
-            assert!(result.is_ok());
-        }
-
-        // Verify all entries were added
-        for i in 0..10 {
-            assert!(directory.entry_exists(&format!("cn=user{},dc=test,dc=com", i)));
-        }
-
-        // Test concurrent reads while writing
-        let mut tasks = JoinSet::new();
-
-        // Spawn readers
         for _ in 0..5 {
             let dir = Arc::clone(&directory);
             tasks.spawn(async move {
-                for i in 0..10 {
+                for i in 0..15 {
                     let entry = dir.get_entry(&format!("cn=user{},dc=test,dc=com", i));
                     assert!(entry.is_some());
                 }
             });
         }
 
-        // Spawn writers
-        for i in 10..15 {
-            let dir = Arc::clone(&directory);
-            tasks.spawn(async move {
-                let mut entry = LdapEntry::new(format!("cn=user{},dc=test,dc=com", i));
-                entry.add_attribute(
-                    "cn".to_string(),
-                    vec![crate::directory::entry::AttributeValue::String(format!(
-                        "user{}",
-                        i
-                    ))],
-                    crate::directory::entry::AttributeSyntax::String,
-                );
-                dir.add_entry(entry);
-            });
-        }
-
-        // Wait for all tasks
         while let Some(result) = tasks.join_next().await {
             assert!(result.is_ok());
-        }
-
-        // Verify all entries exist
-        for i in 0..15 {
-            assert!(directory.entry_exists(&format!("cn=user{},dc=test,dc=com", i)));
         }
     }
 
@@ -684,7 +731,7 @@ mod tests {
         use std::thread;
 
         let schema = YamlSchema::default();
-        let directory = Arc::new(Directory::new("dc=test,dc=com".to_string(), schema));
+        let mut directory = Directory::new("dc=test,dc=com".to_string(), schema);
 
         // Add some initial entries
         for i in 0..100 {
@@ -716,6 +763,7 @@ mod tests {
             }
             directory.add_entry(entry);
         }
+        let directory = Arc::new(directory);
 
         // Concurrent searches
         let mut handles = vec![];

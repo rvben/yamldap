@@ -7,11 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add standards-aware DN parsing, semantic DN keys, structural base-DN relocation, and validated immutable directory snapshots.
+- Add bounded filter complexity, directional LDAP messages, a stateful session processor, server resource limits, graceful shutdown, and an embeddable server handle.
+- Add reusable cross-platform verification and pre-publication release gates.
+
+### Changed
+
+- Default to loopback-only `127.0.0.1:1389` and require explicit acknowledgement for non-loopback plaintext LDAP.
+- Narrow the supported library API to configuration and server lifecycle types; move protocol and directory internals behind an opt-in unstable feature.
+- Migrate YAML parsing from deprecated `serde_yaml` to the maintained `serde_yaml_ng` continuation.
+- Run containers as an unprivileged user with loopback-only host publishing and hardened Compose defaults.
+
 ## [0.1.6](https://github.com/rvben/yamldap/compare/v0.1.5...v0.1.6) - 2026-08-29
 
 ### Fixed
 
 - Authenticate crates.io publishing with short-lived trusted-publisher credentials and restore package publishing for the corrective release.
+- Preserve structural BER filters through evaluation, enforce search resource ceilings, close connections after Unbind or write failure, and retain the previous directory after a failed reload.
 
 ## [0.1.5](https://github.com/rvben/yamldap/compare/v0.1.4...v0.1.5) - 2026-08-29
 

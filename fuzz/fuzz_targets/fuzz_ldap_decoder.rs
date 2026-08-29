@@ -6,15 +6,15 @@ use tokio_util::codec::Decoder;
 
 // We need to make SimpleLdapCodec public in the module
 // For now, let's use the same module structure
-use yamldap::ldap::SimpleLdapCodec;
+use yamldap::unstable::SimpleLdapCodec;
 
 fuzz_target!(|data: &[u8]| {
     // Create a BytesMut buffer from the fuzz input
     let mut buf = BytesMut::from(data);
-    
+
     // Create a decoder instance
-    let mut codec = SimpleLdapCodec;
-    
+    let mut codec = SimpleLdapCodec::default();
+
     // Try to decode the data
     // The decoder should handle any malformed input gracefully
     match codec.decode(&mut buf) {

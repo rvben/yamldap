@@ -1,25 +1,37 @@
 ---
 services:
   yamldap:
-    build: 
+    build:
       context: .
       platforms:
         - linux/amd64
     ports:
-      - "389:389"
+      - "127.0.0.1:1389:1389"
     volumes:
       - ./examples/sample_directory.yaml:/data/directory.yaml:ro
-    environment:
-      - RUST_LOG=info
-    command: ["-f", "/data/directory.yaml", "--allow-anonymous"]
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - -f
+      - /data/directory.yaml
+      - --bind-address
+      - 0.0.0.0
+      - --port
+      - "1389"
+      - --allow-insecure-non-loopback
 
   # Optional: LDAP admin tool for testing
   ldapadmin:
-    image: osixia/phpldapadmin:latest
+    image: osixia/phpldapadmin:0.9.0
+    profiles:
+      - admin
     environment:
       - PHPLDAPADMIN_LDAP_HOSTS=yamldap
       - PHPLDAPADMIN_HTTPS=false
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
     depends_on:
       - yamldap

@@ -4,24 +4,64 @@ on:
   push:
     tags:
       - 'v*'
-  # Manual trigger for testing
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Dry run mode (skip actual publishing)'
-        required: false
-        default: true
-        type: boolean
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.87.0
 
 jobs:
+  validate:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Validate tag, package, lockfile, and changelog
+        id: metadata
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            TAG_NAME=$GITHUB_REF_NAME
+          else
+            VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+            TAG_NAME=v$VERSION
+          fi
+
+          VERSION=$(python3 .github/scripts/validate_release.py "$TAG_NAME")
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
+
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            test "$(git rev-parse "$TAG_NAME^{commit}")" = "$GITHUB_SHA"
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Mandatory verification
+    uses: ./.github/workflows/verify.yml
+
   build:
     name: Build ${{ matrix.target }}
+    needs:
+      - validate
+      - verify
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -50,134 +90,72 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_VERSION }}
           target: ${{ matrix.target }}
-
-      - name: Build
+      - name: Build locked release binary
         run: make build-target TARGET=${{ matrix.target }}
-
       - name: Smoke test binary
         shell: bash
         run: target/${{ matrix.target }}/release/${{ matrix.artifact_name }} --version
-
       - name: Upload binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.asset_name }}
           path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          if-no-files-found: error
+          retention-days: 7
 
-  release:
-    name: Create Release
-    needs: [build, publish-crate, publish-docker-hub, publish-ghcr]
+  checksums:
+    name: Assemble verified release assets
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Download release binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: yamldap-*
           path: artifacts
-
-      - name: Extract release notes
-        run: |
-          TAG_NAME=${GITHUB_REF#refs/tags/}
-          VERSION=${TAG_NAME#v}
-          if [ -f scripts/extract-changelog.sh ] && [ -f CHANGELOG.md ]; then
-            chmod +x scripts/extract-changelog.sh
-            ./scripts/extract-changelog.sh "$VERSION" > release-notes.md || echo "No changelog entry found for $VERSION" > release-notes.md
-          else
-            echo "No changelog found" > release-notes.md
-          fi
-
-      - name: Prepare release assets
+      - name: Name assets and generate checksums
+        shell: bash
         run: |
           mkdir release-assets
-          for dir in artifacts/*/; do
-            if [ -d "$dir" ]; then
-              asset_name=$(basename "$dir")
-              cp "$dir"* "release-assets/$asset_name"
-              chmod +x "release-assets/$asset_name"
-            fi
+          for directory in artifacts/*
+          do
+            asset_name=$(basename "$directory")
+            binary=$(find "$directory" -maxdepth 1 -type f -print -quit)
+            test -n "$binary"
+            cp "$binary" "release-assets/$asset_name"
           done
-
-      - name: Create GitHub Release
-        if: ${{ inputs.dry_run != true }}
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+          chmod +x release-assets/yamldap-*
+          (cd release-assets && sha256sum yamldap-* > SHA256SUMS)
+      - name: Upload release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          body_path: release-notes.md
-          files: release-assets/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Test Release Creation (dry run)
-        if: ${{ inputs.dry_run == true }}
-        run: |
-          echo "DRY RUN: Would create release with:"
-          echo "- Release notes from: release-notes.md"
-          echo "- Release notes content:"
-          cat release-notes.md
-          echo ""
-          echo "- Artifacts:"
-          ls -la release-assets/
-
-  publish-crate:
-    name: Publish to crates.io
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          toolchain: stable
-
-      - name: Authenticate with crates.io
-        if: ${{ inputs.dry_run != true }}
-        id: crates-io-auth
-        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
-
-      - name: Publish to crates.io
-        if: ${{ inputs.dry_run != true }}
-        run: make publish-crate
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
-
-      - name: Test crates.io publish (dry run)
-        if: ${{ inputs.dry_run == true }}
-        run: |
-          echo "DRY RUN: Would publish to crates.io"
-          make publish-crate-dry
+          name: release-assets
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
 
   test-container:
-    name: Smoke test release container
-    needs: build
+    name: Functional container smoke test
+    needs:
+      - validate
+      - build
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Download Linux binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: yamldap-linux-*
           path: artifacts
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-
       - name: Build test image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -187,179 +165,330 @@ jobs:
           load: true
           tags: yamldap:release-smoke-test
           build-args: |
-            VERSION=smoke-test
+            VERSION=${{ needs.validate.outputs.version }}
             REVISION=${{ github.sha }}
+      - name: Require non-root image metadata
+        run: test "$(docker image inspect --format '{{.Config.User}}' yamldap:release-smoke-test)" = "65532:65532"
+      - name: Run read-only container
+        shell: bash
+        run: |
+          docker run --detach --name yamldap-release-smoke \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --publish 127.0.0.1:1389:1389 \
+            --volume "$PWD/examples/sample_directory.yaml:/data/directory.yaml:ro" \
+            yamldap:release-smoke-test \
+            -f /data/directory.yaml \
+            --bind-address 0.0.0.0 \
+            --port 1389 \
+            --allow-insecure-non-loopback
+      - name: Bind and query RootDSE
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket
+          import time
 
-      - name: Run test image
-        run: docker run --rm yamldap:release-smoke-test --version
+          def length(value: int) -> bytes:
+              if value < 128:
+                  return bytes([value])
+              encoded = value.to_bytes((value.bit_length() + 7) // 8, "big")
+              return bytes([0x80 | len(encoded)]) + encoded
+
+          def tlv(tag: int, value: bytes) -> bytes:
+              return bytes([tag]) + length(len(value)) + value
+
+          deadline = time.monotonic() + 20
+          while True:
+              try:
+                  connection = socket.create_connection(("127.0.0.1", 1389), timeout=1)
+                  break
+              except OSError:
+                  if time.monotonic() >= deadline:
+                      raise
+                  time.sleep(0.1)
+
+          bind_dn = b"uid=jdoe,ou=users,dc=example,dc=com"
+          bind = tlv(0x60, b"\x02\x01\x03" + tlv(0x04, bind_dn) + tlv(0x80, b"password123"))
+          connection.sendall(tlv(0x30, b"\x02\x01\x01" + bind))
+          response = connection.recv(4096)
+          assert b"\x61" in response and b"\x0a\x01\x00" in response, response.hex()
+
+          search = tlv(
+              0x63,
+              tlv(0x04, b"")
+              + b"\x0a\x01\x00"
+              + b"\x0a\x01\x00"
+              + b"\x02\x01\x01"
+              + b"\x02\x01\x05"
+              + b"\x01\x01\x00"
+              + tlv(0x87, b"objectClass")
+              + tlv(0x30, b""),
+          )
+          connection.sendall(tlv(0x30, b"\x02\x01\x02" + search))
+          response = b""
+          while b"\x65" not in response:
+              chunk = connection.recv(4096)
+              if not chunk:
+                  raise AssertionError("connection closed before SearchResultDone")
+              response += chunk
+          assert b"\x0a\x01\x00" in response, response.hex()
+          connection.close()
+          PY
+      - name: Show container logs on failure
+        if: ${{ failure() }}
+        run: docker logs yamldap-release-smoke
+      - name: Remove smoke-test container
+        if: ${{ always() }}
+        run: docker rm --force yamldap-release-smoke
+
+  publication-gate:
+    name: Pre-publication gate
+    if: ${{ always() }}
+    needs:
+      - validate
+      - verify
+      - build
+      - checksums
+      - test-container
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all pre-publication jobs
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          CHECKSUM_RESULT: ${{ needs.checksums.result }}
+          CONTAINER_RESULT: ${{ needs.test-container.result }}
+        run: |
+          for result in \
+            "$VALIDATE_RESULT" \
+            "$VERIFY_RESULT" \
+            "$BUILD_RESULT" \
+            "$CHECKSUM_RESULT" \
+            "$CONTAINER_RESULT"
+          do
+            test "$result" = success
+          done
+
+  dry-run:
+    name: Dry-run summary
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs:
+      - validate
+      - publication-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "Release ${{ needs.validate.outputs.version }} passed every pre-publication gate; nothing was published."
+
+  publish-crate:
+    name: Publish to crates.io
+    if: ${{ github.event_name == 'push' }}
+    needs:
+      - validate
+      - publication-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Authenticate with crates.io
+        id: crates-io-auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+      - name: Publish locked crate
+        run: make publish-crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
 
   publish-docker-hub:
     name: Publish Docker Hub image
-    needs: [build, test-container]
+    if: ${{ github.event_name == 'push' }}
+    needs:
+      - validate
+      - publication-gate
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Download Linux binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: yamldap-linux-*
           path: artifacts
-
-      - name: Extract version
-        id: version
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
-          else
-            VERSION=latest
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-
       - name: Log in to Docker Hub
-        if: ${{ inputs.dry_run != true }}
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679fd # v4.6.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and push Docker Hub image
-        if: ${{ inputs.dry_run != true }}
+      - name: Build and push immutable version tag
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            docker.io/rvben/yamldap:${{ steps.version.outputs.version }}
-            docker.io/rvben/yamldap:latest
+          tags: docker.io/rvben/yamldap:${{ needs.validate.outputs.version }}
           build-args: |
-            VERSION=${{ steps.version.outputs.version }}
+            VERSION=${{ needs.validate.outputs.version }}
             REVISION=${{ github.sha }}
           provenance: mode=max
           sbom: true
 
-      - name: Test Docker Hub image (dry run)
-        if: ${{ inputs.dry_run == true }}
+  publish-ghcr:
+    name: Publish GHCR image
+    if: ${{ github.event_name == 'push' }}
+    needs:
+      - validate
+      - publication-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download Linux binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: yamldap-linux-*
+          path: artifacts
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679fd # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push immutable version tag
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile.release
           platforms: linux/amd64,linux/arm64
-          outputs: type=oci,dest=${{ runner.temp }}/yamldap-docker-hub.tar
+          push: true
+          tags: ghcr.io/rvben/yamldap:${{ needs.validate.outputs.version }}
           build-args: |
-            VERSION=${{ steps.version.outputs.version }}
+            VERSION=${{ needs.validate.outputs.version }}
             REVISION=${{ github.sha }}
+          provenance: mode=max
+          sbom: true
 
-  publish-ghcr:
-    name: Publish GHCR image
-    needs: [build, test-container]
+  update-container-latest:
+    name: Update container latest tags
+    if: ${{ github.event_name == 'push' }}
+    needs:
+      - validate
+      - publish-docker-hub
+      - publish-ghcr
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download Linux binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: yamldap-linux-*
-          path: artifacts
-
-      - name: Extract version
-        id: version
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
-          else
-            VERSION=latest
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-
+      - name: Log in to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679fd # v4.6.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
       - name: Log in to GitHub Container Registry
-        if: ${{ inputs.dry_run != true }}
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679fd # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Update latest from immutable manifests
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          docker buildx imagetools create \
+            --tag docker.io/rvben/yamldap:latest \
+            docker.io/rvben/yamldap:"$VERSION"
+          docker buildx imagetools create \
+            --tag ghcr.io/rvben/yamldap:latest \
+            ghcr.io/rvben/yamldap:"$VERSION"
 
-      - name: Build and push GHCR image
-        if: ${{ inputs.dry_run != true }}
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+  release:
+    name: Create GitHub Release
+    if: ${{ github.event_name == 'push' }}
+    needs:
+      - validate
+      - checksums
+      - publish-crate
+      - publish-docker-hub
+      - publish-ghcr
+      - update-container-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          context: .
-          file: Dockerfile.release
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ghcr.io/rvben/yamldap:${{ steps.version.outputs.version }}
-            ghcr.io/rvben/yamldap:latest
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-            REVISION=${{ github.sha }}
-          provenance: mode=max
-          sbom: true
-
-      - name: Test GHCR image (dry run)
-        if: ${{ inputs.dry_run == true }}
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+          name: release-assets
+          path: release-assets
+      - name: Extract release notes
+        run: |
+          ./scripts/extract-changelog.sh "${{ needs.validate.outputs.version }}" > release-notes.md
+          test -s release-notes.md
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          context: .
-          file: Dockerfile.release
-          platforms: linux/amd64,linux/arm64
-          outputs: type=oci,dest=${{ runner.temp }}/yamldap-ghcr.tar
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-            REVISION=${{ github.sha }}
+          body_path: release-notes.md
+          files: release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   summary:
-    name: Release Summary
-    needs: [release, publish-crate, test-container, publish-docker-hub, publish-ghcr]
+    name: Release summary
+    if: ${{ always() }}
+    needs:
+      - validate
+      - publication-gate
+      - dry-run
+      - publish-crate
+      - publish-docker-hub
+      - publish-ghcr
+      - update-container-latest
+      - release
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: always()
     steps:
-      - name: Summary
+      - name: Report outcome
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GATE_RESULT: ${{ needs.publication-gate.result }}
+          DRY_RUN_RESULT: ${{ needs.dry-run.result }}
+          CRATE_RESULT: ${{ needs.publish-crate.result }}
+          DOCKER_HUB_RESULT: ${{ needs.publish-docker-hub.result }}
+          GHCR_RESULT: ${{ needs.publish-ghcr.result }}
+          LATEST_RESULT: ${{ needs.update-container-latest.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
         run: |
-          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
-            echo "## 🧪 Dry Run Complete!"
-            echo ""
-            echo "The release pipeline executed successfully in dry-run mode."
-            echo "All artifacts were built but nothing was published."
-            echo ""
-            echo "To do an actual release:"
-            echo "1. Run vership preflight"
-            echo "2. Run vership bump patch (or minor/major)"
-            echo "3. Run vership verify after this workflow completes"
-          elif [[ "${{ needs.release.result }}" == "success" && \
-                  "${{ needs.publish-crate.result }}" == "success" && \
-                  "${{ needs.test-container.result }}" == "success" && \
-                  "${{ needs.publish-docker-hub.result }}" == "success" && \
-                  "${{ needs.publish-ghcr.result }}" == "success" ]]; then
-            echo "## 🎉 Release Complete!"
-            echo ""
-            echo "The release has been published successfully:"
-            echo "- ✅ Binaries uploaded to GitHub Release"
-            echo "- ✅ Package published to crates.io"
-            echo "- ✅ Docker images pushed to Docker Hub and GHCR"
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            test "$GATE_RESULT" = success
+            test "$DRY_RUN_RESULT" = success
+            echo "Dry run completed without publishing."
           else
-            echo "## ❌ Release Incomplete"
-            echo ""
-            echo "- GitHub Release: ${{ needs.release.result }}"
-            echo "- crates.io: ${{ needs.publish-crate.result }}"
-            echo "- Container smoke test: ${{ needs.test-container.result }}"
-            echo "- Docker Hub: ${{ needs.publish-docker-hub.result }}"
-            echo "- GHCR: ${{ needs.publish-ghcr.result }}"
-            exit 1
+            test "$GATE_RESULT" = success
+            test "$CRATE_RESULT" = success
+            test "$DOCKER_HUB_RESULT" = success
+            test "$GHCR_RESULT" = success
+            test "$LATEST_RESULT" = success
+            test "$RELEASE_RESULT" = success
+            echo "Release published successfully."
           fi

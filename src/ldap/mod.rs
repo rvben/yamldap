@@ -5,8 +5,8 @@ pub mod operations;
 pub mod protocol;
 pub mod simple_protocol;
 
-pub use bind::handle_bind_request;
-pub use filters::{parse_ldap_filter, LdapFilter};
-pub use operations::{handle_operation, LdapOperation};
-pub use protocol::{LdapMessage, LdapMessageId, LdapProtocolOp, LdapResultCode};
+#[cfg(any(test, feature = "unstable-internals"))]
+pub use filters::parse_ldap_filter;
+#[cfg(feature = "unstable-internals")]
+pub use filters::{FilterLimits, LdapFilter, DEFAULT_FILTER_LIMITS};
 pub use simple_protocol::SimpleLdapCodec;

@@ -3,6 +3,7 @@ name = "yamldap-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
+license = "MIT OR Apache-2.0"
 
 [package.metadata]
 cargo-fuzz = true
@@ -15,6 +16,8 @@ tokio-util = { version = "0.7", features = ["codec"] }
 
 [dependencies.yamldap]
 path = ".."
+version = "0.1.5"
+features = ["unstable-internals"]
 
 [[bin]]
 name = "fuzz_ldap_decoder"

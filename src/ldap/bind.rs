@@ -1,16 +1,16 @@
 use super::protocol::{
-    BindAuthentication, LdapMessage, LdapMessageId, LdapProtocolOp, LdapResult, LdapResultCode,
+    BindAuthentication, LdapMessageId, LdapResponse, LdapResponseMessage, LdapResult,
+    LdapResultCode,
 };
 use crate::directory::{AuthHandler, Directory};
 
-pub fn handle_bind_request(
-    message_id: LdapMessageId,
-    dn: String,
+pub(crate) fn evaluate_bind(
+    dn: &str,
     auth: BindAuthentication,
     directory: &Directory,
     auth_handler: &AuthHandler,
-) -> LdapMessage {
-    let result = match auth {
+) -> LdapResult {
+    match auth {
         BindAuthentication::Anonymous => {
             if !dn.is_empty() {
                 LdapResult::error(
@@ -37,25 +37,17 @@ pub fn handle_bind_request(
             ),
         ),
         BindAuthentication::Simple(password) => {
-            // A zero-length password must never authenticate a claimed identity.
-            // Anonymous simple bind is represented by both an empty DN and password.
             if password.is_empty() && !dn.is_empty() {
-                return LdapMessage {
-                    message_id,
-                    protocol_op: LdapProtocolOp::BindResponse {
-                        result: LdapResult::error(
-                            LdapResultCode::InvalidCredentials,
-                            "Empty passwords cannot authenticate a named identity".to_string(),
-                        ),
-                    },
-                };
+                return LdapResult::error(
+                    LdapResultCode::InvalidCredentials,
+                    "Empty passwords cannot authenticate a named identity".to_string(),
+                );
             }
 
-            // Get the entry if DN is provided
             let entry = if dn.is_empty() {
                 None
             } else {
-                directory.get_entry(&dn)
+                directory.get_entry(dn)
             };
 
             match auth_handler.authenticate(entry.as_ref(), &password) {
@@ -64,14 +56,26 @@ pub fn handle_bind_request(
                     LdapResultCode::InvalidCredentials,
                     "Invalid credentials".to_string(),
                 ),
-                Err(e) => LdapResult::error(LdapResultCode::InvalidCredentials, e.to_string()),
+                Err(error) => {
+                    LdapResult::error(LdapResultCode::InvalidCredentials, error.to_string())
+                }
             }
         }
-    };
+    }
+}
 
-    LdapMessage {
+pub fn handle_bind_request(
+    message_id: LdapMessageId,
+    dn: String,
+    auth: BindAuthentication,
+    directory: &Directory,
+    auth_handler: &AuthHandler,
+) -> LdapResponseMessage {
+    let result = evaluate_bind(&dn, auth, directory, auth_handler);
+
+    LdapResponseMessage {
         message_id,
-        protocol_op: LdapProtocolOp::BindResponse { result },
+        protocol_op: LdapResponse::BindResponse { result },
     }
 }
 
@@ -82,7 +86,7 @@ mod tests {
 
     fn create_test_directory() -> Directory {
         let schema = crate::yaml::YamlSchema::default();
-        let directory = Directory::new("dc=example,dc=com".to_string(), schema);
+        let mut directory = Directory::new("dc=example,dc=com".to_string(), schema);
 
         // Add a test user
         let mut entry = LdapEntry::new("cn=test,dc=example,dc=com".to_string());
@@ -110,7 +114,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
                 assert_eq!(result.diagnostic_message, "");
             }
@@ -132,7 +136,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::StrongerAuthRequired);
                 assert_eq!(result.diagnostic_message, "Anonymous bind not allowed");
             }
@@ -154,7 +158,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
                 assert_eq!(result.diagnostic_message, "");
             }
@@ -176,7 +180,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
                 assert!(result.diagnostic_message.contains("Invalid credentials"));
             }
@@ -198,7 +202,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
             }
             _ => panic!("Expected BindResponse"),
@@ -219,7 +223,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
             }
             _ => panic!("Expected BindResponse"),
@@ -244,7 +248,7 @@ mod tests {
 
         assert_eq!(response.message_id, 7);
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::AuthMethodNotSupported);
                 assert!(result.diagnostic_message.contains("GSS-SPNEGO"));
                 assert!(result
@@ -273,7 +277,7 @@ mod tests {
 
         assert_eq!(response.message_id, 8);
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::AuthMethodNotSupported);
                 assert!(result.diagnostic_message.contains("Sicily"));
                 assert!(result.diagnostic_message.contains("0x8a"));
@@ -299,7 +303,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
                 assert!(result.diagnostic_message.contains("Invalid credentials"));
             }
@@ -321,7 +325,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
                 assert!(result.diagnostic_message.contains("Invalid credentials"));
             }
@@ -349,7 +353,7 @@ mod tests {
     #[test]
     fn test_handle_bind_with_hashed_password() {
         let schema = crate::yaml::YamlSchema::default();
-        let directory = Directory::new("dc=example,dc=com".to_string(), schema);
+        let mut directory = Directory::new("dc=example,dc=com".to_string(), schema);
 
         // Add a test user with hashed password
         let mut entry = LdapEntry::new("cn=hashed,dc=example,dc=com".to_string());
@@ -373,7 +377,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
                 assert_eq!(result.diagnostic_message, "");
             }
@@ -396,7 +400,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
             }
             _ => panic!("Expected BindResponse"),
@@ -418,7 +422,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
                 assert_eq!(result.diagnostic_message, "");
             }
@@ -435,7 +439,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::Success);
                 assert_eq!(result.diagnostic_message, "");
             }
@@ -458,7 +462,7 @@ mod tests {
         );
 
         match response.protocol_op {
-            LdapProtocolOp::BindResponse { result } => {
+            LdapResponse::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
                 assert_eq!(result.result_code as u8, 49); // Verify it's error code 49
                 assert!(result.diagnostic_message.contains("Invalid credentials"));
@@ -490,7 +494,7 @@ mod tests {
             );
 
             match response.protocol_op {
-                LdapProtocolOp::BindResponse { result } => {
+                LdapResponse::BindResponse { result } => {
                     assert_eq!(
                         result.result_code,
                         LdapResultCode::Success,
@@ -527,7 +531,7 @@ mod tests {
             // Note: Current implementation may not handle spaces correctly
             // This test documents the expected behavior
             match response.protocol_op {
-                LdapProtocolOp::BindResponse { result } => {
+                LdapResponse::BindResponse { result } => {
                     // If spaces aren't handled, we expect InvalidCredentials, not InvalidDNSyntax
                     if result.result_code != LdapResultCode::Success {
                         assert_eq!(

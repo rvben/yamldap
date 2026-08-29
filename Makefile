@@ -1,4 +1,8 @@
-.PHONY: all build test bench clean run docker-build docker-run help release release-check release-lint release-extra-checks
+.PHONY: all audit build build-target build-all-targets check ci clean docs-check \
+	docker-build docker-buildx docker-compose-registry docker-compose-up docker-login \
+	docker-push docker-push-dockerhub docker-run docker-setup docker-stop fmt fmt-check \
+	help lint package-check publish-crate publish-crate-dry release release-check \
+	release-extra-checks release-lint run test test-integration test-ldap test-unit
 
 RELEASE_LEVEL ?= patch
 
@@ -7,13 +11,13 @@ all: build
 
 # Build the project in release mode
 build:
-	cargo build --release
+	cargo build --locked --release
 
 # Build for a specific target
 build-target:
 	@if [ -z "$(TARGET)" ]; then echo "Usage: make build-target TARGET=x86_64-unknown-linux-gnu"; exit 1; fi
 	@echo "Building for target: $(TARGET)"
-	cargo build --release --target $(TARGET)
+	cargo build --locked --release --target $(TARGET)
 
 # Build all release targets
 build-all-targets:
@@ -26,15 +30,15 @@ build-all-targets:
 
 # Run all tests
 test:
-	cargo test --all-features -- --nocapture
+	cargo test --locked --all-targets --all-features -- --nocapture
 
 # Run unit tests only
 test-unit:
-	cargo test --lib --all-features -- --nocapture
+	cargo test --locked --lib --all-features -- --nocapture
 
 # Run integration tests only
 test-integration:
-	cargo test --test '*' --all-features -- --nocapture
+	cargo test --locked --test '*' --all-features -- --nocapture
 
 # Run tests with coverage
 coverage:
@@ -60,7 +64,7 @@ clean:
 
 # Run the server locally
 run:
-	cargo run -- -f examples/sample_directory.yaml --allow-anonymous
+	cargo run --locked -- -f examples/sample_directory.yaml --allow-anonymous
 
 # Build Docker image (local, current platform only)
 docker-build:
@@ -102,7 +106,12 @@ docker-push-dockerhub: docker-setup
 
 # Run with Docker
 docker-run:
-	docker run -d --name yamldap -p 389:389 -v $$(pwd)/examples/sample_directory.yaml:/data/directory.yaml yamldap:latest -f /data/directory.yaml --allow-anonymous
+	docker run -d --name yamldap --read-only --cap-drop ALL \
+		--security-opt no-new-privileges \
+		-p 127.0.0.1:1389:1389 \
+		-v $$(pwd)/examples/sample_directory.yaml:/data/directory.yaml:ro \
+		yamldap:latest -f /data/directory.yaml --bind-address 0.0.0.0 \
+		--port 1389 --allow-insecure-non-loopback
 
 # Run with Docker Compose (local build)
 docker-compose-up:
@@ -134,45 +143,61 @@ gh-secrets:
 
 # Run linting
 lint:
-	cargo clippy -- -D warnings
+	cargo clippy --locked --all-targets --all-features -- -D warnings
 
 # Format code
 fmt:
-	cargo fmt
+	cargo fmt --all
+	cargo fmt --manifest-path fuzz/Cargo.toml
 
 # Check formatting
 fmt-check:
-	cargo fmt -- --check
+	cargo fmt --all -- --check
+	cargo fmt --manifest-path fuzz/Cargo.toml -- --check
 
 # Type check
 check:
-	cargo check --all-features
+	cargo check --locked --all-targets --all-features
+	cargo check --locked --manifest-path fuzz/Cargo.toml --bins
 
-# Run all CI checks (format, lint, type check, test)
-ci: fmt-check check lint test
+# Build documentation with warnings treated as errors.
+docs-check:
+	RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+
+# Verify the exact package Cargo would upload.
+package-check:
+	cargo publish --locked --dry-run
+
+# Check the locked dependency graph against the RustSec advisory database.
+audit:
+	@command -v cargo-audit >/dev/null || { echo "cargo-audit is required: cargo install cargo-audit --locked"; exit 1; }
+	@command -v cargo-deny >/dev/null || { echo "cargo-deny is required: cargo install cargo-deny --locked"; exit 1; }
+	cargo audit --deny warnings
+	cargo audit --deny warnings --file fuzz/Cargo.lock
+	cargo deny --locked check
+	cargo deny --locked --manifest-path fuzz/Cargo.toml check
+
+# Run the same checks enforced by CI.
+ci: fmt-check check lint test docs-check package-check audit
 
 # Test with LDAP client
 test-ldap:
 	@echo "Testing LDAP server..."
-	@python3 test_ldap.py || true
+	python3 test_ldap.py
 
 # Publish to crates.io
 publish-crate:
 	@if [ -z "$$CARGO_REGISTRY_TOKEN" ]; then echo "Error: CARGO_REGISTRY_TOKEN not set"; exit 1; fi
-	cargo publish
+	cargo publish --locked
 
 # Dry run publish to crates.io
 publish-crate-dry:
-	cargo publish --dry-run
+	cargo publish --locked --dry-run
 
 # Checks Vership runs before changing release state.
-release-lint:
-	cargo fmt -- --check
-	cargo clippy --all-targets --all-features -- -D warnings
+release-lint: fmt-check lint
 
-release-extra-checks:
-	cargo doc --no-deps --all-features
-	cargo publish --dry-run --allow-dirty
+release-extra-checks: docs-check package-check audit
 
 # Preview release readiness without changing repository state.
 release-check:
@@ -208,6 +233,9 @@ help:
 	@echo "  make fmt                  - Format code"
 	@echo "  make fmt-check            - Check code formatting"
 	@echo "  make check                - Type check the code"
+	@echo "  make docs-check           - Build docs with warnings denied"
+	@echo "  make package-check        - Dry-run the locked crate package"
+	@echo "  make audit                - Audit locked dependencies with RustSec"
 	@echo "  make ci                   - Run all CI checks"
 	@echo ""
 	@echo "Docker:"

@@ -1,391 +1,194 @@
-use crate::directory::{AuthHandler, Directory};
-use crate::ldap::protocol::{LdapMessage, LdapProtocolOp};
-use crate::ldap::{handle_operation, LdapOperation, SimpleLdapCodec};
-use crate::server::session::LdapSession;
+use crate::directory::AuthHandler;
+use crate::ldap::operations::OperationLimits;
+use crate::ldap::protocol::{BindAuthentication, LdapRequest, LdapResponse};
+use crate::ldap::SimpleLdapCodec;
+use crate::server::session::{ConnectionDisposition, LdapSession, SessionContext};
+use crate::server::{DirectoryStore, ResourceLimits};
 use futures::{SinkExt, StreamExt};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tokio_util::codec::Framed;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
-pub async fn handle_connection(
+pub(crate) async fn handle_connection(
     socket: TcpStream,
-    directory: Arc<RwLock<Directory>>,
+    directory: DirectoryStore,
     auth_handler: Arc<AuthHandler>,
     ad_compat: bool,
+    limits: ResourceLimits,
+    blocking_operations: Arc<Semaphore>,
+    password_operations: Arc<Semaphore>,
 ) -> crate::Result<()> {
     let peer_addr = socket.peer_addr()?;
-    info!("Handling connection from {}", peer_addr);
+    info!(%peer_addr, "handling LDAP connection");
 
-    // Create framed connection with our simple LDAP codec
-    let mut framed = Framed::new(socket, SimpleLdapCodec);
-
-    // Session state
+    let codec = SimpleLdapCodec::new(limits.max_message_bytes);
+    let mut framed = Framed::new(socket, codec);
     let mut session = LdapSession::new();
 
-    // Message handling loop
-    while let Some(result) = framed.next().await {
-        match result {
-            Ok(message) => {
-                debug!("Received LDAP message: {:?}", message);
+    loop {
+        let next = timeout(limits.idle_timeout, framed.next())
+            .await
+            .map_err(|_| timed_out("LDAP connection idle timeout"))?;
+        let Some(message) = next else {
+            break;
+        };
+        let message = message?;
+        let operation_name = request_name(&message.protocol_op);
+        debug!(
+            message_id = message.message_id,
+            operation = operation_name,
+            "received LDAP request"
+        );
 
-                // Convert protocol message to operation
-                let operation = match protocol_to_operation(&message) {
-                    Some(op) => op,
-                    None => {
-                        error!("Could not convert protocol message to operation");
-                        continue;
-                    }
-                };
-
-                // RFC 4511 bind processing discards the previous authentication state,
-                // regardless of whether the new bind succeeds.
-                if matches!(message.protocol_op, LdapProtocolOp::BindRequest { .. }) {
-                    session.unbind();
-                }
-
-                // Handle the operation
-                let responses = {
-                    let directory = directory.read().map_err(|error| {
-                        crate::YamlLdapError::Directory(format!(
-                            "Failed to read directory: {error}"
-                        ))
-                    })?;
-                    handle_operation(
-                        message.message_id,
-                        operation,
-                        &directory,
-                        &auth_handler,
-                        session.is_bound(),
-                        ad_compat,
-                    )
-                };
-
-                // Update session state for bind operations
-                if let LdapProtocolOp::BindRequest { ref dn, .. } = message.protocol_op {
-                    // Check if bind was successful
-                    if let Some(response) = responses.first() {
-                        if let LdapProtocolOp::BindResponse { ref result } = response.protocol_op {
-                            if result.result_code == crate::ldap::protocol::LdapResultCode::Success
-                            {
-                                session.bind(dn.clone());
-                                info!("Successful bind for DN: {}", dn);
-                            }
-                        }
-                    }
-                } else if matches!(message.protocol_op, LdapProtocolOp::UnbindRequest) {
-                    session.unbind();
-                    info!("Client unbind, closing connection");
-                    break;
-                }
-
-                // Send responses
-                for response in responses {
-                    debug!("Sending LDAP response: {:?}", response);
-                    if let Err(e) = framed.send(response).await {
-                        error!("Failed to send response: {}", e);
-                        break;
-                    }
-                }
+        let password_permit = if matches!(
+            &message.protocol_op,
+            LdapRequest::BindRequest {
+                authentication: BindAuthentication::Simple(_),
+                ..
             }
-            Err(e) => {
-                error!("Error reading from socket: {}", e);
-                break;
-            }
+        ) {
+            Some(
+                Arc::clone(&password_operations)
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| unavailable("password-operation limiter closed"))?,
+            )
+        } else {
+            None
+        };
+        let blocking_permit = Arc::clone(&blocking_operations)
+            .acquire_owned()
+            .await
+            .map_err(|_| unavailable("blocking-operation limiter closed"))?;
+
+        let snapshot = directory.snapshot()?;
+        let auth_handler = Arc::clone(&auth_handler);
+        let operation_limits = OperationLimits {
+            max_search_entries: limits.max_search_entries,
+            max_search_duration: limits.search_timeout,
+            max_search_response_bytes: limits.max_search_response_bytes,
+        };
+
+        let processed = tokio::task::spawn_blocking(move || {
+            let _blocking_permit = blocking_permit;
+            let _password_permit = password_permit;
+            let mut session = session;
+            let outcome = session.process(
+                message,
+                SessionContext {
+                    directory: &snapshot,
+                    auth_handler: &auth_handler,
+                    ad_compat,
+                    limits: operation_limits,
+                },
+            );
+            (session, outcome)
+        })
+        .await
+        .map_err(|error| {
+            crate::YamlLdapError::Directory(format!("LDAP operation task failed: {error}"))
+        })?;
+        session = processed.0;
+        let outcome = processed.1;
+
+        for response in outcome.responses {
+            debug!(
+                message_id = response.message_id,
+                operation = response_name(&response.protocol_op),
+                "sending LDAP response"
+            );
+            timeout(limits.write_timeout, framed.send(response))
+                .await
+                .map_err(|_| timed_out("LDAP response write timeout"))??;
+        }
+
+        if outcome.disposition == ConnectionDisposition::Close {
+            break;
         }
     }
 
-    info!("Connection closed for {}", peer_addr);
+    info!(%peer_addr, "LDAP connection closed");
     Ok(())
 }
 
-// Convert protocol messages to operations
-fn protocol_to_operation(msg: &LdapMessage) -> Option<LdapOperation> {
-    match &msg.protocol_op {
-        LdapProtocolOp::BindRequest {
-            version,
-            dn,
-            authentication,
-        } => Some(LdapOperation::Bind {
-            version: *version,
-            dn: dn.clone(),
-            auth: authentication.clone(),
-        }),
-        LdapProtocolOp::UnbindRequest => Some(LdapOperation::Unbind),
-        LdapProtocolOp::SearchRequest {
-            base_dn,
-            scope,
-            deref_aliases: _,
-            size_limit,
-            time_limit,
-            types_only,
-            filter,
-            attributes,
-        } => Some(LdapOperation::Search {
-            base_dn: base_dn.clone(),
-            scope: *scope,
-            size_limit: *size_limit,
-            time_limit: *time_limit,
-            types_only: *types_only,
-            filter: filter.clone(),
-            attributes: attributes.clone(),
-        }),
-        LdapProtocolOp::CompareRequest {
-            dn,
-            attribute,
-            value,
-        } => Some(LdapOperation::Compare {
-            dn: dn.clone(),
-            attribute: attribute.clone(),
-            value: value.clone(),
-        }),
-        LdapProtocolOp::AbandonRequest { message_id } => Some(LdapOperation::Abandon {
-            message_id: *message_id,
-        }),
-        LdapProtocolOp::ExtendedRequest { name, value } => Some(LdapOperation::Extended {
-            name: name.clone(),
-            value: value.clone(),
-        }),
-        _ => None,
+fn request_name(request: &LdapRequest) -> &'static str {
+    match request {
+        LdapRequest::BindRequest { .. } => "bind",
+        LdapRequest::UnbindRequest => "unbind",
+        LdapRequest::SearchRequest { .. } => "search",
+        LdapRequest::CompareRequest { .. } => "compare",
+        LdapRequest::AbandonRequest { .. } => "abandon",
+        LdapRequest::ExtendedRequest { .. } => "extended",
     }
+}
+
+fn response_name(response: &LdapResponse) -> &'static str {
+    match response {
+        LdapResponse::BindResponse { .. } => "bind",
+        LdapResponse::SearchResultEntry { .. } => "search-entry",
+        LdapResponse::SearchResultDone { .. } => "search-done",
+        LdapResponse::CompareResponse { .. } => "compare",
+        LdapResponse::ExtendedResponse { .. } => "extended",
+    }
+}
+
+fn timed_out(message: &'static str) -> crate::YamlLdapError {
+    std::io::Error::new(std::io::ErrorKind::TimedOut, message).into()
+}
+
+fn unavailable(message: &'static str) -> crate::YamlLdapError {
+    crate::YamlLdapError::Directory(message.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::directory::entry::{AttributeSyntax, AttributeValue, LdapEntry};
-    use crate::ldap::protocol::{BindAuthentication, DerefAliases, SearchScope};
+    use crate::directory::Directory;
     use crate::yaml::YamlSchema;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    fn create_test_directory() -> Arc<RwLock<Directory>> {
-        let schema = YamlSchema::default();
-        let directory = Directory::new("dc=test,dc=com".to_string(), schema);
-
-        // Add a test user
-        let mut entry = LdapEntry::new("cn=admin,dc=test,dc=com".to_string());
-        entry.add_attribute(
-            "userPassword".to_string(),
-            vec![AttributeValue::String("password".to_string())],
-            AttributeSyntax::String,
-        );
-        entry.add_attribute(
-            "objectClass".to_string(),
-            vec![AttributeValue::String("person".to_string())],
-            AttributeSyntax::String,
-        );
-        directory.add_entry(entry);
-
-        Arc::new(RwLock::new(directory))
-    }
-
-    #[test]
-    fn test_protocol_to_operation_bind() {
-        let msg = LdapMessage {
-            message_id: 1,
-            protocol_op: LdapProtocolOp::BindRequest {
-                version: 3,
-                dn: "cn=admin,dc=test,dc=com".to_string(),
-                authentication: BindAuthentication::Simple("password".to_string()),
-            },
-        };
-
-        let operation = protocol_to_operation(&msg).unwrap();
-        match operation {
-            LdapOperation::Bind { version, dn, auth } => {
-                assert_eq!(version, 3);
-                assert_eq!(dn, "cn=admin,dc=test,dc=com");
-                match auth {
-                    BindAuthentication::Simple(pwd) => assert_eq!(pwd, "password"),
-                    _ => panic!("Expected Simple authentication"),
-                }
-            }
-            _ => panic!("Expected Bind operation"),
-        }
-    }
-
-    #[test]
-    fn test_protocol_to_operation_unbind() {
-        let msg = LdapMessage {
-            message_id: 2,
-            protocol_op: LdapProtocolOp::UnbindRequest,
-        };
-
-        let operation = protocol_to_operation(&msg).unwrap();
-        match operation {
-            LdapOperation::Unbind => {}
-            _ => panic!("Expected Unbind operation"),
-        }
-    }
-
-    #[test]
-    fn test_protocol_to_operation_search() {
-        let msg = LdapMessage {
-            message_id: 3,
-            protocol_op: LdapProtocolOp::SearchRequest {
-                base_dn: "dc=test,dc=com".to_string(),
-                scope: SearchScope::WholeSubtree,
-                deref_aliases: DerefAliases::NeverDerefAliases,
-                size_limit: 0,
-                time_limit: 0,
-                types_only: false,
-                filter: "(objectClass=*)".to_string(),
-                attributes: vec!["cn".to_string(), "mail".to_string()],
-            },
-        };
-
-        let operation = protocol_to_operation(&msg).unwrap();
-        match operation {
-            LdapOperation::Search {
-                base_dn,
-                scope,
-                size_limit,
-                time_limit,
-                types_only,
-                filter,
-                attributes,
-            } => {
-                assert_eq!(base_dn, "dc=test,dc=com");
-                assert_eq!(scope, SearchScope::WholeSubtree);
-                assert_eq!(size_limit, 0);
-                assert_eq!(time_limit, 0);
-                assert!(!types_only);
-                assert_eq!(filter, "(objectClass=*)");
-                assert_eq!(attributes, vec!["cn", "mail"]);
-            }
-            _ => panic!("Expected Search operation"),
-        }
-    }
-
-    #[test]
-    fn test_protocol_to_operation_compare() {
-        let msg = LdapMessage {
-            message_id: 4,
-            protocol_op: LdapProtocolOp::CompareRequest {
-                dn: "cn=admin,ou=Engineering,dc=example,dc=com".to_string(),
-                attribute: "cn".to_string(),
-                value: "admin".to_string(),
-            },
-        };
-
-        let operation = protocol_to_operation(&msg).unwrap();
-        match operation {
-            LdapOperation::Compare {
-                dn,
-                attribute,
-                value,
-            } => {
-                assert_eq!(dn, "cn=admin,ou=Engineering,dc=example,dc=com");
-                assert_eq!(attribute, "cn");
-                assert_eq!(value, "admin");
-            }
-            _ => panic!("Expected Compare operation"),
-        }
-    }
-
-    #[test]
-    fn test_protocol_to_operation_abandon() {
-        let msg = LdapMessage {
-            message_id: 4,
-            protocol_op: LdapProtocolOp::AbandonRequest { message_id: 10 },
-        };
-
-        let operation = protocol_to_operation(&msg).unwrap();
-        match operation {
-            LdapOperation::Abandon { message_id } => {
-                assert_eq!(message_id, 10);
-            }
-            _ => panic!("Expected Abandon operation"),
-        }
-    }
-
-    #[test]
-    fn test_protocol_to_operation_extended() {
-        let msg = LdapMessage {
-            message_id: 5,
-            protocol_op: LdapProtocolOp::ExtendedRequest {
-                name: "1.3.6.1.4.1.1466.20037".to_string(),
-                value: None,
-            },
-        };
-
-        let operation = protocol_to_operation(&msg).unwrap();
-        match operation {
-            LdapOperation::Extended { name, value } => {
-                assert_eq!(name, "1.3.6.1.4.1.1466.20037");
-                assert!(value.is_none());
-            }
-            _ => panic!("Expected Extended operation"),
-        }
-    }
-
-    #[test]
-    fn test_protocol_to_operation_unsupported() {
-        let msg = LdapMessage {
-            message_id: 4,
-            protocol_op: LdapProtocolOp::BindResponse {
-                result: crate::ldap::protocol::LdapResult::success(),
-            },
-        };
-
-        let operation = protocol_to_operation(&msg);
-        assert!(operation.is_none());
-    }
-
     #[tokio::test]
-    async fn test_handle_connection_unbind() {
-        // Start a test server
+    async fn unbind_closes_the_connection_without_a_response() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let address = listener.local_addr().unwrap();
+        let directory = DirectoryStore::new(Directory::new(
+            "dc=test,dc=com".to_string(),
+            YamlSchema::default(),
+        ));
+        let limits = ResourceLimits::default();
+        let blocking = Arc::new(Semaphore::new(limits.max_blocking_operations));
+        let passwords = Arc::new(Semaphore::new(limits.max_password_operations));
 
-        let directory = create_test_directory();
-        let auth_handler = Arc::new(AuthHandler::new(false));
-
-        // Handle connections in background
-        let dir = directory.clone();
-        let auth = auth_handler.clone();
-        tokio::spawn(async move {
+        let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let _ = handle_connection(socket, dir, auth, false).await;
-        });
-
-        // Connect as client
-        let mut client = TcpStream::connect(addr).await.unwrap();
-
-        // Send an unbind request (simplified)
-        // In real implementation, this would be properly encoded
-        client
-            .write_all(b"\x30\x05\x02\x01\x01\x42\x00")
+            handle_connection(
+                socket,
+                directory,
+                Arc::new(AuthHandler::new(true)),
+                false,
+                limits,
+                blocking,
+                passwords,
+            )
             .await
             .unwrap();
-
-        // Connection should close
-        let mut buf = [0u8; 10];
-        let n = client.read(&mut buf).await.unwrap();
-        assert_eq!(n, 0); // EOF
-    }
-
-    #[tokio::test]
-    async fn test_handle_connection_error() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let directory = create_test_directory();
-        let auth_handler = Arc::new(AuthHandler::new(false));
-
-        let dir = directory.clone();
-        let auth = auth_handler.clone();
-        let handle = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            let _ = handle_connection(socket, dir, auth, false).await;
         });
 
-        // Connect and immediately close
-        let client = TcpStream::connect(addr).await.unwrap();
-        drop(client);
-
-        // Connection handler should complete without panic
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), handle).await;
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(&[0x30, 0x05, 0x02, 0x01, 0x01, 0x42, 0x00])
+            .await
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        let count = timeout(std::time::Duration::from_secs(1), client.read(&mut byte))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 0);
+        server.await.unwrap();
     }
 }

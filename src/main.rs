@@ -1,12 +1,12 @@
 use clap::Parser;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
-use yamldap::{Config, Server};
+use yamldap::{CliArgs, Config, Server};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Parse command line arguments
-    let args = yamldap::config::CliArgs::parse();
+    let args = CliArgs::parse();
 
     // Configure logging
     let log_level = if args.verbose {

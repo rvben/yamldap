@@ -31,7 +31,6 @@ assets/*.png
 PRD.md
 RELEASE_CHECKLIST.md
 RELEASING.md
-.github/workflows/ci.yml
 
 # Build artifacts
 yamldap-linux-amd64

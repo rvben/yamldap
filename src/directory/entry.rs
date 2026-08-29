@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::dn::DistinguishedName;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttributeSyntax {
     String,
@@ -35,6 +37,7 @@ impl AttributeValue {
         }
     }
 
+    #[cfg(any(test, feature = "unstable-internals"))]
     pub fn as_bytes(&self) -> Vec<u8> {
         match self {
             AttributeValue::String(s) => s.as_bytes().to_vec(),
@@ -53,6 +56,7 @@ impl AttributeValue {
 pub struct LdapAttribute {
     pub name: String,
     pub values: Vec<AttributeValue>,
+    #[cfg_attr(not(feature = "unstable-internals"), allow(dead_code))]
     pub syntax: AttributeSyntax,
 }
 
@@ -96,13 +100,38 @@ impl LdapEntry {
         self.attributes.contains_key(&name.to_lowercase())
     }
 
+    #[cfg(any(test, feature = "unstable-internals"))]
     pub fn matches_dn(&self, dn: &str) -> bool {
-        self.dn.eq_ignore_ascii_case(dn)
+        let Ok(stored) = DistinguishedName::parse(&self.dn) else {
+            return false;
+        };
+        let Ok(candidate) = DistinguishedName::parse(dn) else {
+            return false;
+        };
+        stored.key() == candidate.key()
     }
 }
 
 impl From<crate::yaml::YamlEntry> for LdapEntry {
     fn from(yaml_entry: crate::yaml::YamlEntry) -> Self {
+        Self::try_from_yaml(yaml_entry, &crate::yaml::YamlSchema::default())
+            .expect("invalid YAML entry passed to infallible compatibility conversion")
+    }
+}
+
+impl LdapEntry {
+    /// Convert a YAML entry without discarding unsupported or malformed data.
+    pub fn try_from_yaml(
+        yaml_entry: crate::yaml::YamlEntry,
+        schema: &crate::yaml::YamlSchema,
+    ) -> crate::Result<Self> {
+        DistinguishedName::parse(&yaml_entry.dn).map_err(|error| {
+            crate::YamlLdapError::Config(format!(
+                "Entry {} has an invalid DN: {error}",
+                yaml_entry.dn
+            ))
+        })?;
+
         let mut entry = LdapEntry::new(yaml_entry.dn);
         entry.object_classes = yaml_entry.object_class;
 
@@ -120,46 +149,168 @@ impl From<crate::yaml::YamlEntry> for LdapEntry {
 
         // Convert other attributes
         for (name, value) in yaml_entry.attributes {
-            let values = match value {
-                serde_yaml::Value::String(s) => vec![AttributeValue::String(s)],
-                serde_yaml::Value::Number(n) => {
-                    if let Some(i) = n.as_i64() {
-                        vec![AttributeValue::Integer(i)]
-                    } else {
-                        vec![AttributeValue::String(n.to_string())]
-                    }
-                }
-                serde_yaml::Value::Bool(b) => vec![AttributeValue::Boolean(b)],
-                serde_yaml::Value::Sequence(seq) => seq
-                    .into_iter()
-                    .filter_map(|v| match v {
-                        serde_yaml::Value::String(s) => Some(AttributeValue::String(s)),
-                        _ => None,
-                    })
-                    .collect(),
-                _ => vec![],
-            };
-
-            if !values.is_empty() {
-                // Guess syntax based on attribute name or value type
-                let syntax = guess_attribute_syntax(&name, &values[0]);
-                entry.add_attribute(name, values, syntax);
+            if entry.has_attribute(&name) {
+                return Err(crate::YamlLdapError::Config(format!(
+                    "Entry {} contains duplicate attribute description {}",
+                    entry.dn, name
+                )));
             }
+            let definition = schema
+                .custom_attributes
+                .iter()
+                .find(|(defined_name, _)| defined_name.eq_ignore_ascii_case(&name))
+                .map(|(_, definition)| definition);
+            let declared_syntax = definition
+                .map(|definition| parse_syntax(&definition.syntax))
+                .transpose()
+                .map_err(|message| {
+                    crate::YamlLdapError::Config(format!(
+                        "Entry {} attribute {}: {message}",
+                        entry.dn, name
+                    ))
+                })?;
+            let (values, syntax) = convert_yaml_values(&name, value, declared_syntax)?;
+            if definition.is_some_and(|definition| definition.single_value) && values.len() != 1 {
+                return Err(crate::YamlLdapError::Config(format!(
+                    "Entry {} attribute {} is single-valued but has {} values",
+                    entry.dn,
+                    name,
+                    values.len()
+                )));
+            }
+            entry.add_attribute(name, values, syntax);
         }
 
-        entry
+        Ok(entry)
     }
 }
 
-fn guess_attribute_syntax(name: &str, value: &AttributeValue) -> AttributeSyntax {
-    match name.to_lowercase().as_str() {
+fn parse_syntax(syntax: &str) -> Result<AttributeSyntax, String> {
+    match syntax.to_ascii_lowercase().replace(['_', '-'], "").as_str() {
+        "string" | "directorystring" => Ok(AttributeSyntax::String),
+        "integer" => Ok(AttributeSyntax::Integer),
+        "boolean" | "bool" => Ok(AttributeSyntax::Boolean),
+        "binary" | "octetstring" => Ok(AttributeSyntax::Binary),
+        "dn" | "distinguishedname" => Ok(AttributeSyntax::Dn),
+        "generalizedtime" => Ok(AttributeSyntax::GeneralizedTime),
+        _ => Err(format!("unsupported schema syntax '{syntax}'")),
+    }
+}
+
+fn convert_yaml_values(
+    name: &str,
+    value: serde_yaml_ng::Value,
+    declared_syntax: Option<AttributeSyntax>,
+) -> crate::Result<(Vec<AttributeValue>, AttributeSyntax)> {
+    let raw_values = match value {
+        serde_yaml_ng::Value::Sequence(values) if values.is_empty() => {
+            return Err(crate::YamlLdapError::Config(format!(
+                "Attribute {name} must have at least one value"
+            )));
+        }
+        serde_yaml_ng::Value::Sequence(values) => values,
+        serde_yaml_ng::Value::Null => {
+            return Err(crate::YamlLdapError::Config(format!(
+                "Attribute {name} cannot be null"
+            )));
+        }
+        scalar => vec![scalar],
+    };
+
+    let syntax = declared_syntax.unwrap_or_else(|| infer_syntax(name, &raw_values));
+    let values = raw_values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            convert_yaml_value(value, &syntax).map_err(|message| {
+                crate::YamlLdapError::Config(format!(
+                    "Attribute {name} value {}: {message}",
+                    index + 1
+                ))
+            })
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+    Ok((values, syntax))
+}
+
+fn infer_syntax(name: &str, values: &[serde_yaml_ng::Value]) -> AttributeSyntax {
+    match name.to_ascii_lowercase().as_str() {
         "member" | "memberof" | "manager" => AttributeSyntax::Dn,
         "createtimestamp" | "modifytimestamp" => AttributeSyntax::GeneralizedTime,
-        _ => match value {
-            AttributeValue::Integer(_) => AttributeSyntax::Integer,
-            AttributeValue::Boolean(_) => AttributeSyntax::Boolean,
+        _ => match values.first() {
+            Some(serde_yaml_ng::Value::Number(number)) if number.as_i64().is_some() => {
+                AttributeSyntax::Integer
+            }
+            Some(serde_yaml_ng::Value::Bool(_)) => AttributeSyntax::Boolean,
             _ => AttributeSyntax::String,
         },
+    }
+}
+
+fn convert_yaml_value(
+    value: serde_yaml_ng::Value,
+    syntax: &AttributeSyntax,
+) -> Result<AttributeValue, String> {
+    match syntax {
+        AttributeSyntax::String => match value {
+            serde_yaml_ng::Value::String(value) => Ok(AttributeValue::String(value)),
+            serde_yaml_ng::Value::Number(value) => Ok(AttributeValue::String(value.to_string())),
+            serde_yaml_ng::Value::Bool(value) => Ok(AttributeValue::String(value.to_string())),
+            _ => Err("expected a scalar string, number, or boolean".to_string()),
+        },
+        AttributeSyntax::Integer => {
+            let integer = match value {
+                serde_yaml_ng::Value::Number(value) => value.as_i64(),
+                serde_yaml_ng::Value::String(value) => value.parse().ok(),
+                _ => None,
+            }
+            .ok_or_else(|| "expected a signed 64-bit integer".to_string())?;
+            Ok(AttributeValue::Integer(integer))
+        }
+        AttributeSyntax::Boolean => {
+            let boolean = match value {
+                serde_yaml_ng::Value::Bool(value) => Some(value),
+                serde_yaml_ng::Value::String(value) if value.eq_ignore_ascii_case("true") => {
+                    Some(true)
+                }
+                serde_yaml_ng::Value::String(value) if value.eq_ignore_ascii_case("false") => {
+                    Some(false)
+                }
+                _ => None,
+            }
+            .ok_or_else(|| "expected TRUE or FALSE".to_string())?;
+            Ok(AttributeValue::Boolean(boolean))
+        }
+        AttributeSyntax::Binary => {
+            let encoded = match value {
+                serde_yaml_ng::Value::String(value) => value,
+                _ => return Err("expected a base64 string".to_string()),
+            };
+            let bytes = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                encoded.as_bytes(),
+            )
+            .map_err(|_| "expected valid base64".to_string())?;
+            Ok(AttributeValue::Binary(bytes))
+        }
+        AttributeSyntax::Dn => {
+            let value = match value {
+                serde_yaml_ng::Value::String(value) => value,
+                _ => return Err("expected an RFC 4514 DN string".to_string()),
+            };
+            DistinguishedName::parse(&value).map_err(|error| error.to_string())?;
+            Ok(AttributeValue::Dn(value))
+        }
+        AttributeSyntax::GeneralizedTime => {
+            let value = match value {
+                serde_yaml_ng::Value::String(value) => value,
+                _ => return Err("expected an LDAP generalized time string".to_string()),
+            };
+            let parsed = chrono::NaiveDateTime::parse_from_str(&value, "%Y%m%d%H%M%SZ")
+                .map_err(|_| "expected generalized time in YYYYmmddHHMMSSZ form".to_string())?
+                .and_utc();
+            Ok(AttributeValue::GeneralizedTime(parsed))
+        }
     }
 }
 
@@ -292,17 +443,17 @@ mod tests {
             attributes: [
                 (
                     "cn".to_string(),
-                    serde_yaml::Value::String("test".to_string()),
+                    serde_yaml_ng::Value::String("test".to_string()),
                 ),
                 (
                     "sn".to_string(),
-                    serde_yaml::Value::String("User".to_string()),
+                    serde_yaml_ng::Value::String("User".to_string()),
                 ),
                 (
                     "uid".to_string(),
-                    serde_yaml::Value::Number(serde_yaml::Number::from(12345)),
+                    serde_yaml_ng::Value::Number(serde_yaml_ng::Number::from(12345)),
                 ),
-                ("active".to_string(), serde_yaml::Value::Bool(true)),
+                ("active".to_string(), serde_yaml_ng::Value::Bool(true)),
             ]
             .into_iter()
             .collect(),
@@ -342,14 +493,14 @@ mod tests {
             attributes: [
                 (
                     "cn".to_string(),
-                    serde_yaml::Value::String("test".to_string()),
+                    serde_yaml_ng::Value::String("test".to_string()),
                 ),
                 (
                     "member".to_string(),
-                    serde_yaml::Value::Sequence(vec![
-                        serde_yaml::Value::String("cn=user1,dc=example,dc=com".to_string()),
-                        serde_yaml::Value::String("cn=user2,dc=example,dc=com".to_string()),
-                        serde_yaml::Value::Number(serde_yaml::Number::from(123)), // Non-string, should be filtered
+                    serde_yaml_ng::Value::Sequence(vec![
+                        serde_yaml_ng::Value::String("cn=user1,dc=example,dc=com".to_string()),
+                        serde_yaml_ng::Value::String("cn=user2,dc=example,dc=com".to_string()),
+                        serde_yaml_ng::Value::Number(serde_yaml_ng::Number::from(123)), // Invalid mixed type
                     ]),
                 ),
             ]
@@ -357,14 +508,9 @@ mod tests {
             .collect(),
         };
 
-        let entry: LdapEntry = yaml_entry.into();
-
-        let member_attr = entry.get_attribute("member").unwrap();
-        assert_eq!(member_attr.values.len(), 2); // Only the two string values
-        match &member_attr.syntax {
-            AttributeSyntax::Dn => {}
-            _ => panic!("Expected DN syntax for member attribute"),
-        }
+        let error =
+            LdapEntry::try_from_yaml(yaml_entry, &crate::yaml::YamlSchema::default()).unwrap_err();
+        assert!(error.to_string().contains("expected an RFC 4514 DN string"));
     }
 
     #[test]
@@ -374,7 +520,7 @@ mod tests {
             object_class: vec!["top".to_string()],
             attributes: [(
                 "score".to_string(),
-                serde_yaml::Value::Number(serde_yaml::Number::from(1.25)),
+                serde_yaml_ng::Value::Number(serde_yaml_ng::Number::from(1.25)),
             )]
             .into_iter()
             .collect(),
@@ -390,74 +536,27 @@ mod tests {
     }
 
     #[test]
-    fn test_guess_attribute_syntax() {
-        // Test DN attributes
-        assert!(matches!(
-            guess_attribute_syntax("member", &AttributeValue::String("test".to_string())),
-            AttributeSyntax::Dn
-        ));
-        assert!(matches!(
-            guess_attribute_syntax("memberOf", &AttributeValue::String("test".to_string())),
-            AttributeSyntax::Dn
-        ));
-        assert!(matches!(
-            guess_attribute_syntax("manager", &AttributeValue::String("test".to_string())),
-            AttributeSyntax::Dn
-        ));
-
-        // Test timestamp attributes
-        assert!(matches!(
-            guess_attribute_syntax(
-                "createTimestamp",
-                &AttributeValue::String("test".to_string())
-            ),
-            AttributeSyntax::GeneralizedTime
-        ));
-        assert!(matches!(
-            guess_attribute_syntax(
-                "modifyTimestamp",
-                &AttributeValue::String("test".to_string())
-            ),
-            AttributeSyntax::GeneralizedTime
-        ));
-
-        // Test value-based syntax guessing
-        assert!(matches!(
-            guess_attribute_syntax("someAttr", &AttributeValue::Integer(42)),
-            AttributeSyntax::Integer
-        ));
-        assert!(matches!(
-            guess_attribute_syntax("someAttr", &AttributeValue::Boolean(true)),
-            AttributeSyntax::Boolean
-        ));
-        assert!(matches!(
-            guess_attribute_syntax("someAttr", &AttributeValue::String("test".to_string())),
-            AttributeSyntax::String
-        ));
-    }
-
-    #[test]
     fn test_ldap_entry_from_yaml_empty_values() {
         let yaml_entry = crate::yaml::YamlEntry {
             dn: "cn=test,dc=example,dc=com".to_string(),
             object_class: vec!["top".to_string()],
             attributes: [
-                ("empty".to_string(), serde_yaml::Value::Null),
-                ("emptySeq".to_string(), serde_yaml::Value::Sequence(vec![])),
+                ("empty".to_string(), serde_yaml_ng::Value::Null),
+                (
+                    "emptySeq".to_string(),
+                    serde_yaml_ng::Value::Sequence(vec![]),
+                ),
             ]
             .into_iter()
             .collect(),
         };
 
-        let entry: LdapEntry = yaml_entry.into();
-
-        // Empty values should not create attributes
-        assert!(!entry.has_attribute("empty"));
-        assert!(!entry.has_attribute("emptySeq"));
-
-        // Only objectClass should be present
-        assert_eq!(entry.attributes.len(), 1);
-        assert!(entry.has_attribute("objectClass"));
+        let error =
+            LdapEntry::try_from_yaml(yaml_entry, &crate::yaml::YamlSchema::default()).unwrap_err();
+        assert!(
+            error.to_string().contains("cannot be null")
+                || error.to_string().contains("must have at least one value")
+        );
     }
 
     #[test]

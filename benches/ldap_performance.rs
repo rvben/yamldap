@@ -1,8 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::collections::HashMap;
-use yamldap::directory::{storage::SearchScope, Directory};
-use yamldap::ldap::filters::parse_ldap_filter;
-use yamldap::yaml::{YamlDirectory, YamlEntry, YamlSchema};
+use yamldap::unstable::{
+    compile_directory, parse_ldap_filter, Directory, DirectoryConfig,
+    DirectorySearchScope as SearchScope, YamlDirectory, YamlEntry, YamlSchema,
+};
 
 fn create_test_directory(num_users: usize) -> Directory {
     let mut entries = vec![
@@ -13,7 +14,7 @@ fn create_test_directory(num_users: usize) -> Directory {
                 let mut attrs = HashMap::new();
                 attrs.insert(
                     "dc".to_string(),
-                    serde_yaml::Value::String("example".to_string()),
+                    serde_yaml_ng::Value::String("example".to_string()),
                 );
                 attrs
             },
@@ -25,7 +26,7 @@ fn create_test_directory(num_users: usize) -> Directory {
                 let mut attrs = HashMap::new();
                 attrs.insert(
                     "ou".to_string(),
-                    serde_yaml::Value::String("users".to_string()),
+                    serde_yaml_ng::Value::String("users".to_string()),
                 );
                 attrs
             },
@@ -45,23 +46,23 @@ fn create_test_directory(num_users: usize) -> Directory {
                 let mut attrs = HashMap::new();
                 attrs.insert(
                     "uid".to_string(),
-                    serde_yaml::Value::String(format!("user{}", i)),
+                    serde_yaml_ng::Value::String(format!("user{}", i)),
                 );
                 attrs.insert(
                     "cn".to_string(),
-                    serde_yaml::Value::String(format!("User {}", i)),
+                    serde_yaml_ng::Value::String(format!("User {}", i)),
                 );
                 attrs.insert(
                     "sn".to_string(),
-                    serde_yaml::Value::String(format!("Surname{}", i)),
+                    serde_yaml_ng::Value::String(format!("Surname{}", i)),
                 );
                 attrs.insert(
                     "mail".to_string(),
-                    serde_yaml::Value::String(format!("user{}@example.com", i)),
+                    serde_yaml_ng::Value::String(format!("user{}@example.com", i)),
                 );
                 attrs.insert(
                     "userPassword".to_string(),
-                    serde_yaml::Value::String("password123".to_string()),
+                    serde_yaml_ng::Value::String("password123".to_string()),
                 );
                 attrs
             },
@@ -69,14 +70,14 @@ fn create_test_directory(num_users: usize) -> Directory {
     }
 
     let yaml_dir = YamlDirectory {
-        directory: yamldap::yaml::schema::DirectoryConfig {
+        directory: DirectoryConfig {
             base_dn: "dc=example,dc=com".to_string(),
         },
         schema: None,
         entries,
     };
 
-    Directory::from_yaml(yaml_dir, YamlSchema::default())
+    compile_directory(yaml_dir, YamlSchema::default(), None).unwrap()
 }
 
 fn benchmark_entry_lookup(c: &mut Criterion) {

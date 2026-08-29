@@ -68,7 +68,8 @@ fn verify_bcrypt(password: &str, hash: &str) -> crate::Result<bool> {
         .map_err(|e| crate::YamlLdapError::Auth(format!("Bcrypt verification failed: {}", e)))
 }
 
-pub fn hash_password(password: &str, method: &str) -> crate::Result<String> {
+#[cfg(test)]
+fn hash_password(password: &str, method: &str) -> crate::Result<String> {
     match method {
         "plain" => Ok(password.to_string()),
         "sha" => {

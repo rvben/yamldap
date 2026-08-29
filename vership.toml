@@ -15,7 +15,7 @@ pre-bump = "make release-extra-checks"
 lint = true
 tests = true
 lint_command = "make release-lint"
-test_command = "cargo test --all-targets --all-features"
+test_command = "make test"
 
 [verify]
 image = "rvben/yamldap"
