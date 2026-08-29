@@ -7,12 +7,13 @@ on:
 
 permissions:
   contents: read
+  id-token: write
   pull-requests: read
 
 jobs:
   update:
     name: Propose policy-approved updates
-    uses: rvben/upd/.github/workflows/dependency-health.yml@be91f2e854b0c6386f253175db02a0e585d9244a # v0.8.4
+    uses: rvben/upd/.github/workflows/dependency-health.yml@355b6dc049f271e8ca9157f1d6595470d4c49066
     with:
       langs: rust,actions
       lock: true
@@ -25,6 +26,4 @@ jobs:
       branch: automation/upd-dependencies
       commit-message: "chore(deps): update dependencies with upd"
       auto-merge: false
-      app-client-id: ${{ vars.UPD_APP_CLIENT_ID }}
-    secrets:
-      app-private-key: ${{ secrets.UPD_APP_PRIVATE_KEY }}
+      broker-url: ${{ vars.UPD_BROKER_URL }}

@@ -29,19 +29,24 @@ The schedules and immutable reusable-workflow pins live in
 ## Publication credentials
 
 The reusable workflows prepare and validate proposals with read-only repository
-access. Publication requires an independently installed GitHub App so that the
-generated pull request can trigger normal repository checks, including when an
-Actions workflow changes.
+access. Publication uses the centrally hosted upd token broker. GitHub Actions
+exchanges a short-lived OIDC identity token for a least-privilege installation
+token, so this repository stores no GitHub App private key. Generated pull
+requests can still trigger normal repository checks, including when an Actions
+workflow changes.
 
 Configure:
 
-- Repository or organization variable `UPD_APP_CLIENT_ID`.
-- Repository or organization secret `UPD_APP_PRIVATE_KEY` containing the App's
-  PEM private key.
+- Repository or organization variable `UPD_BROKER_URL` containing the HTTPS
+  token endpoint.
+- Workflow permission `id-token: write`, alongside the existing read-only
+  repository permissions.
 - App repository permissions: Contents read/write, Pull requests read/write,
   and Workflows read/write.
 
-Without those values the workflows remain fail-closed: they can validate an
+The broker additionally verifies this repository's stable identity, the exact
+reusable-workflow ref and commit, event, branch, and requested permissions.
+Without the broker URL the workflows remain fail-closed: they can validate an
 eligible proposal but cannot publish it.
 
 ## Local use
