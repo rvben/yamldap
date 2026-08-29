@@ -1,0 +1,21 @@
+# Vership owns local versioning, changelog promotion, release commits, tags,
+# pushes, and post-release verification. GitHub Actions publishes artifacts.
+
+[project]
+type = "rust"
+branch = "main"
+
+[changelog]
+unconventional = "exclude"
+
+[hooks]
+pre-bump = "make release-extra-checks"
+
+[checks]
+lint = true
+tests = true
+lint_command = "make release-lint"
+test_command = "cargo test --all-targets --all-features"
+
+[verify]
+image = "rvben/yamldap"

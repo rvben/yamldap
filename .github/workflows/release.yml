@@ -330,8 +330,9 @@ jobs:
             echo "All artifacts were built but nothing was published."
             echo ""
             echo "To do an actual release:"
-            echo "1. Run scripts/prepare-release.sh to prepare the release"
-            echo "2. Push the tag to trigger this workflow"
+            echo "1. Run vership preflight"
+            echo "2. Run vership bump patch (or minor/major)"
+            echo "3. Run vership verify after this workflow completes"
           elif [[ "${{ needs.release.result }}" == "success" && \
                   "${{ needs.publish-crate.result }}" == "success" && \
                   "${{ needs.test-container.result }}" == "success" && \

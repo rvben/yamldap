@@ -426,6 +426,10 @@ This approach keeps yamldap simple while allowing TLS when needed for production
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+## Releasing
+
+Vership manages version bumps, changelog promotion, release commits, tags, pushes, and verification. The tag-triggered GitHub Actions workflow builds and publishes the release artifacts. See [the release runbook](docs/releases.md).
+
 ## License
 
 This project is dual-licensed under MIT OR Apache-2.0

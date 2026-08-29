@@ -1,4 +1,6 @@
-.PHONY: all build test bench clean run docker-build docker-run help
+.PHONY: all build test bench clean run docker-build docker-run help release release-check release-lint release-extra-checks
+
+RELEASE_LEVEL ?= patch
 
 # Default target
 all: build
@@ -167,43 +169,24 @@ publish-crate:
 publish-crate-dry:
 	cargo publish --dry-run
 
-# Release preparation
-release-prep:
-	@if [ -f scripts/prepare-release.sh ]; then \
-		./scripts/prepare-release.sh; \
-	else \
-		echo "Release preparation script not found"; \
-	fi
+# Checks Vership runs before changing release state.
+release-lint:
+	cargo fmt -- --check
+	cargo clippy --all-targets --all-features -- -D warnings
 
-# Check if ready for release
+release-extra-checks:
+	cargo doc --no-deps --all-features
+	cargo publish --dry-run --allow-dirty
+
+# Preview release readiness without changing repository state.
 release-check:
-	@echo "Checking release readiness..."
-	@echo ""
-	@echo "1. Running tests..."
-	@cargo test --quiet
-	@echo "✓ Tests passed"
-	@echo ""
-	@echo "2. Checking formatting..."
-	@cargo fmt -- --check
-	@echo "✓ Code is formatted"
-	@echo ""
-	@echo "3. Running clippy..."
-	@cargo clippy -- -D warnings
-	@echo "✓ No clippy warnings"
-	@echo ""
-	@echo "4. Checking documentation..."
-	@cargo doc --no-deps --quiet
-	@echo "✓ Documentation builds"
-	@echo ""
-	@echo "5. Dry-run crates.io publish..."
-	@cargo publish --dry-run --allow-dirty
-	@echo "✓ Package is ready for crates.io"
-	@echo ""
-	@echo "✅ All checks passed! Ready for release."
-	@echo ""
-	@echo "Next steps:"
-	@echo "  1. Run 'make release-prep' to prepare the release"
-	@echo "  2. Push the tag to trigger the release workflow"
+	@command -v vership >/dev/null || { echo "Vership is required: cargo install vership"; exit 1; }
+	vership preflight --output text
+
+# Bump, commit, tag, and push. The tag triggers the publishing workflow.
+release:
+	@command -v vership >/dev/null || { echo "Vership is required: cargo install vership"; exit 1; }
+	vership bump $(RELEASE_LEVEL) --output text
 
 # Help target
 help:
@@ -240,8 +223,8 @@ help:
 	@echo "  make docker-stop          - Stop Docker containers"
 	@echo ""
 	@echo "Release:"
-	@echo "  make release-check        - Check if ready for release"
-	@echo "  make release-prep         - Prepare a new release"
+	@echo "  make release-check        - Run Vership preflight checks"
+	@echo "  make release RELEASE_LEVEL=patch - Bump, tag, and push with Vership"
 	@echo "  make publish-crate        - Publish to crates.io"
 	@echo "  make publish-crate-dry    - Dry run crates.io publish"
 	@echo ""
