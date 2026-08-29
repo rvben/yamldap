@@ -1,6 +1,6 @@
 [package]
 name = "yamldap"
-version = "0.1.6"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.87"
 authors = ["Ruben J. Jongejan <ruben.jongejan@gmail.com>"]
