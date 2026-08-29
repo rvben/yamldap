@@ -43,7 +43,7 @@ entries:
     sn: "Smith"
     givenName: "Jane"
     mail: "jane.smith@example.com"
-    userPassword: "{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g="  # SHA hash of "secret"
+    userPassword: "{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g="  # SHA hash of "password"
 
   # Groups
   - dn: "cn=developers,ou=groups,dc=example,dc=com"

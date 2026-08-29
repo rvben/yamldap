@@ -189,7 +189,7 @@ entries:                         # List of directory entries
 userPassword: "plaintext"
 
 # SHA hash
-userPassword: "{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g="
+userPassword: "{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g="  # SHA hash of "password"
 
 # Salted SHA
 userPassword: "{SSHA}DkMTwBl+a/3DfY+MTDTrcd5kMT8dpDkE"
