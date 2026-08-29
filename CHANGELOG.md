@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- Decode SASL and Microsoft ADSI Sicily bind requests and return `authMethodNotSupported` instead of dropping the connection, preventing unsupported secure authentication from appearing to hang.
+- Redact simple-bind passwords and SASL credentials from verbose protocol logs.
+- Stop advertising LDAP controls, SASL mechanisms, and a schema entry that yamldap does not implement in RootDSE responses.
+
+### Documentation
+
+- Add anonymous and simple-bind PowerShell `System.DirectoryServices` examples with the appropriate ADSI flags.
+
 ## [0.1.4](https://github.com/rvben/yamldap/compare/v0.1.3...v0.1.4) - 2026-08-28
 
 ### Security

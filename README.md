@@ -133,13 +133,16 @@ ldapsearch -x -H ldap://localhost:3389 \
 yamldap [OPTIONS]
 
 Options:
-  -f, --file <FILE>          Path to YAML directory file
-  -p, --port <PORT>          Port to listen on [default: 389]
-      --bind-address <ADDR>  Address to bind to [default: 0.0.0.0]
-      --allow-anonymous      Allow anonymous bind operations
-  -v, --verbose              Enable verbose logging
-      --log-level <LEVEL>    Set log level: debug, info, warn, error [default: info]
-  -h, --help                 Print help
+  -f, --file <FILE>           Path to YAML directory file
+  -p, --port <PORT>           Port to listen on [default: 389]
+      --bind-address <ADDR>   Address to bind to [default: 0.0.0.0]
+      --base-dn <DN>          Override the base DN from the YAML file
+      --allow-anonymous       Allow anonymous bind operations
+      --hot-reload            Enable hot-reloading of YAML file changes
+  -v, --verbose               Enable verbose logging
+      --log-level <LEVEL>     Set log level: debug, info, warn, error [default: info]
+      --ad-compat             Enable Active Directory schema/filter mappings
+  -h, --help                  Print help
 ```
 
 ## YAML Directory Format
@@ -217,6 +220,47 @@ Special characters can be escaped in filter values:
 ```
 
 ## Integration Examples
+
+### PowerShell (`System.DirectoryServices`)
+
+`DirectoryEntry` uses secure authentication by default on modern .NET. yamldap supports LDAP simple binds and anonymous access, but it does not implement Kerberos, NTLM, or SASL. Select anonymous authentication explicitly when the server runs with `--allow-anonymous`:
+
+```powershell
+$authentication = [System.DirectoryServices.AuthenticationTypes]::Anonymous `
+    -bor [System.DirectoryServices.AuthenticationTypes]::FastBind `
+    -bor [System.DirectoryServices.AuthenticationTypes]::ServerBind
+
+$searchRoot = [System.DirectoryServices.DirectoryEntry]::new(
+    "LDAP://localhost:11389/dc=example,dc=com",
+    $null,
+    $null,
+    $authentication
+)
+
+$searcher = [System.DirectoryServices.DirectorySearcher]::new($searchRoot)
+$searcher.Filter = "(objectClass=*)"
+$searcher.SearchScope = [System.DirectoryServices.SearchScope]::Subtree
+$searcher.ClientTimeout = [TimeSpan]::FromSeconds(10)
+$results = $searcher.FindAll()
+```
+
+`FastBind` keeps ADSI on its generic LDAP interfaces and avoids Active Directory schema discovery. `ServerBind` tells ADSI that the hostname in the path is a specific server. Neither flag enables Active Directory-only behavior.
+
+For a simple authenticated bind, pass a bind DN and password and omit `Anonymous`:
+
+```powershell
+$authentication = [System.DirectoryServices.AuthenticationTypes]::FastBind `
+    -bor [System.DirectoryServices.AuthenticationTypes]::ServerBind
+
+$searchRoot = [System.DirectoryServices.DirectoryEntry]::new(
+    "LDAP://localhost:11389/dc=example,dc=com",
+    "uid=john,ou=users,dc=example,dc=com",
+    "secret123",
+    $authentication
+)
+```
+
+The optional `--ad-compat` server flag maps selected Active Directory-style filters and attributes onto the YAML directory. It is not full Active Directory emulation and is not required for a generic subtree search.
 
 ### Python
 ```python
@@ -346,7 +390,9 @@ See [fuzz/README.md](fuzz/README.md) for detailed fuzzing instructions.
 
 - Read-only operations (no add/modify/delete support yet)
 - Basic LDAP v3 protocol support
+- Simple and anonymous binds only; no SASL, Kerberos, or NTLM authentication
 - No referral or alias support
+- No paged-results or other LDAP controls
 - No built-in TLS/SSL support (see below)
 
 ## TLS/SSL Support

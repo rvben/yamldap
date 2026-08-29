@@ -26,6 +26,16 @@ pub fn handle_bind_request(
                 )
             }
         }
+        BindAuthentication::Sasl { mechanism, .. } => LdapResult::error(
+            LdapResultCode::AuthMethodNotSupported,
+            format!("SASL mechanism {mechanism} is not supported; use a simple or anonymous bind"),
+        ),
+        BindAuthentication::Sicily { tag, .. } => LdapResult::error(
+            LdapResultCode::AuthMethodNotSupported,
+            format!(
+                "Microsoft Sicily authentication (tag 0x{tag:02x}) is not supported; use a simple or anonymous bind"
+            ),
+        ),
         BindAuthentication::Simple(password) => {
             // A zero-length password must never authenticate a claimed identity.
             // Anonymous simple bind is represented by both an empty DN and password.
@@ -211,6 +221,65 @@ mod tests {
         match response.protocol_op {
             LdapProtocolOp::BindResponse { result } => {
                 assert_eq!(result.result_code, LdapResultCode::InvalidCredentials);
+            }
+            _ => panic!("Expected BindResponse"),
+        }
+    }
+
+    #[test]
+    fn test_sasl_bind_returns_auth_method_not_supported() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(true);
+
+        let response = handle_bind_request(
+            7,
+            String::new(),
+            BindAuthentication::Sasl {
+                mechanism: "GSS-SPNEGO".to_string(),
+                credentials: Some(vec![1, 2, 3]),
+            },
+            &directory,
+            &auth_handler,
+        );
+
+        assert_eq!(response.message_id, 7);
+        match response.protocol_op {
+            LdapProtocolOp::BindResponse { result } => {
+                assert_eq!(result.result_code, LdapResultCode::AuthMethodNotSupported);
+                assert!(result.diagnostic_message.contains("GSS-SPNEGO"));
+                assert!(result
+                    .diagnostic_message
+                    .contains("simple or anonymous bind"));
+            }
+            _ => panic!("Expected BindResponse"),
+        }
+    }
+
+    #[test]
+    fn test_sicily_bind_returns_auth_method_not_supported() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(true);
+
+        let response = handle_bind_request(
+            8,
+            String::new(),
+            BindAuthentication::Sicily {
+                tag: 0x8a,
+                credentials: vec![1, 2, 3],
+            },
+            &directory,
+            &auth_handler,
+        );
+
+        assert_eq!(response.message_id, 8);
+        match response.protocol_op {
+            LdapProtocolOp::BindResponse { result } => {
+                assert_eq!(result.result_code, LdapResultCode::AuthMethodNotSupported);
+                assert!(result.diagnostic_message.contains("Sicily"));
+                assert!(result.diagnostic_message.contains("0x8a"));
+                assert!(result
+                    .diagnostic_message
+                    .contains("simple or anonymous bind"));
             }
             _ => panic!("Expected BindResponse"),
         }

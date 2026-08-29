@@ -44,19 +44,6 @@ fn build_rootdse_entry(directory: &Directory, ad_compat: bool) -> LdapEntry {
         AttributeSyntax::String,
     );
 
-    // Empty list signals to clients that no controls are implemented.
-    entry.add_attribute(
-        "supportedControl".to_string(),
-        vec![],
-        AttributeSyntax::String,
-    );
-
-    entry.add_attribute(
-        "supportedSASLMechanisms".to_string(),
-        vec![],
-        AttributeSyntax::String,
-    );
-
     entry.add_attribute(
         "vendorName".to_string(),
         vec![AttributeValue::String("yamldap".to_string())],
@@ -68,13 +55,6 @@ fn build_rootdse_entry(directory: &Directory, ad_compat: bool) -> LdapEntry {
         vec![AttributeValue::String(
             env!("CARGO_PKG_VERSION").to_string(),
         )],
-        AttributeSyntax::String,
-    );
-
-    // A pseudo-value; ADSI may probe the subschema but we don't implement it.
-    entry.add_attribute(
-        "subschemaSubentry".to_string(),
-        vec![AttributeValue::String("cn=schema".to_string())],
         AttributeSyntax::String,
     );
 
@@ -1475,6 +1455,32 @@ mod tests {
                     .get("vendorName")
                     .expect("vendorName must be present");
                 assert_eq!(vendor, &vec!["yamldap".to_string()]);
+            }
+            _ => panic!("Expected SearchResultEntry"),
+        }
+    }
+
+    #[test]
+    fn test_rootdse_does_not_advertise_unimplemented_capabilities() {
+        let directory = create_test_directory();
+        let auth_handler = AuthHandler::new(false);
+
+        let operation = LdapOperation::Search {
+            base_dn: String::new(),
+            scope: SearchScope::BaseObject,
+            size_limit: 0,
+            time_limit: 0,
+            types_only: false,
+            filter: "(objectClass=*)".to_string(),
+            attributes: vec![],
+        };
+
+        let responses = handle_operation(1, operation, &directory, &auth_handler, false, false);
+        match &responses[0].protocol_op {
+            LdapProtocolOp::SearchResultEntry { attributes, .. } => {
+                assert!(!attributes.contains_key("supportedControl"));
+                assert!(!attributes.contains_key("supportedSASLMechanisms"));
+                assert!(!attributes.contains_key("subschemaSubentry"));
             }
             _ => panic!("Expected SearchResultEntry"),
         }

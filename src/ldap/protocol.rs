@@ -1,5 +1,6 @@
 use bytes::BytesMut;
 use std::collections::HashMap;
+use std::fmt;
 use tokio_util::codec::{Decoder, Encoder};
 
 pub type LdapMessageId = u32;
@@ -60,10 +61,46 @@ pub enum LdapProtocolOp {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum BindAuthentication {
     Simple(String), // password
     Anonymous,
+    Sasl {
+        mechanism: String,
+        credentials: Option<Vec<u8>>,
+    },
+    Sicily {
+        tag: u8,
+        credentials: Vec<u8>,
+    },
+}
+
+impl fmt::Debug for BindAuthentication {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Simple(_) => formatter
+                .debug_tuple("Simple")
+                .field(&"<redacted>")
+                .finish(),
+            Self::Anonymous => formatter.write_str("Anonymous"),
+            Self::Sasl {
+                mechanism,
+                credentials,
+            } => formatter
+                .debug_struct("Sasl")
+                .field("mechanism", mechanism)
+                .field("credentials", &credentials.as_ref().map(|_| "<redacted>"))
+                .finish(),
+            Self::Sicily {
+                tag,
+                credentials: _,
+            } => formatter
+                .debug_struct("Sicily")
+                .field("tag", &format_args!("0x{tag:02x}"))
+                .field("credentials", &"<redacted>")
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -235,6 +272,59 @@ mod tests {
             BindAuthentication::Anonymous => {}
             _ => panic!("Expected Anonymous authentication"),
         }
+
+        let sasl = BindAuthentication::Sasl {
+            mechanism: "GSS-SPNEGO".to_string(),
+            credentials: Some(vec![1, 2, 3]),
+        };
+        match sasl {
+            BindAuthentication::Sasl {
+                mechanism,
+                credentials,
+            } => {
+                assert_eq!(mechanism, "GSS-SPNEGO");
+                assert_eq!(credentials, Some(vec![1, 2, 3]));
+            }
+            _ => panic!("Expected SASL authentication"),
+        }
+
+        let sicily = BindAuthentication::Sicily {
+            tag: 0x8a,
+            credentials: vec![1, 2, 3],
+        };
+        match sicily {
+            BindAuthentication::Sicily { tag, credentials } => {
+                assert_eq!(tag, 0x8a);
+                assert_eq!(credentials, vec![1, 2, 3]);
+            }
+            _ => panic!("Expected Sicily authentication"),
+        }
+    }
+
+    #[test]
+    fn test_bind_authentication_debug_redacts_credentials() {
+        let simple = BindAuthentication::Simple("simple-secret".to_string());
+        let sasl = BindAuthentication::Sasl {
+            mechanism: "GSS-SPNEGO".to_string(),
+            credentials: Some(b"sasl-secret".to_vec()),
+        };
+        let sicily = BindAuthentication::Sicily {
+            tag: 0x8a,
+            credentials: b"sicily-secret".to_vec(),
+        };
+
+        let simple_debug = format!("{simple:?}");
+        let sasl_debug = format!("{sasl:?}");
+        let sicily_debug = format!("{sicily:?}");
+
+        assert!(!simple_debug.contains("simple-secret"));
+        assert!(simple_debug.contains("<redacted>"));
+        assert!(!sasl_debug.contains("sasl-secret"));
+        assert!(sasl_debug.contains("GSS-SPNEGO"));
+        assert!(sasl_debug.contains("<redacted>"));
+        assert!(!sicily_debug.contains("sicily-secret"));
+        assert!(sicily_debug.contains("0x8a"));
+        assert!(sicily_debug.contains("<redacted>"));
     }
 
     #[test]

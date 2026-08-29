@@ -545,7 +545,19 @@ impl Decoder for SimpleLdapCodec {
         let protocol_op = match op_tag {
             LDAP_BIND_REQUEST => {
                 // Read bind request length
-                let _length = Self::read_length(&mut cursor)?;
+                let bind_length = Self::read_length(&mut cursor)?;
+                let bind_end = cursor
+                    .position()
+                    .checked_add(bind_length as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "Bind request length overflow")
+                    })?;
+                if bind_end > total_len as u64 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "Bind request exceeds the enclosing LDAP message",
+                    ));
+                }
 
                 // Read version
                 let version = Self::read_integer(&mut cursor)? as u8;
@@ -562,32 +574,123 @@ impl Decoder for SimpleLdapCodec {
                 }
                 let auth = {
                     let auth_tag = cursor.get_u8();
-                    if auth_tag == 0x80 {
-                        // Simple authentication
-                        let pass_len = Self::read_length(&mut cursor)?;
-                        if cursor.remaining() < pass_len {
+                    match auth_tag {
+                        0x80 => {
+                            // simple [0] OCTET STRING
+                            let pass_len = Self::read_length(&mut cursor)?;
+                            if cursor.remaining() < pass_len
+                                || cursor.position() + pass_len as u64 > bind_end
+                            {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "Simple-bind password exceeds the bind request",
+                                ));
+                            }
+                            let mut pass_bytes = vec![0u8; pass_len];
+                            cursor.copy_to_slice(&mut pass_bytes);
+                            let password = String::from_utf8(pass_bytes).map_err(|_| {
+                                io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
+                            })?;
+                            BindAuthentication::Simple(password)
+                        }
+                        0xA3 => {
+                            // sasl [3] SaslCredentials
+                            let sasl_length = Self::read_length(&mut cursor)?;
+                            let sasl_end = cursor
+                                .position()
+                                .checked_add(sasl_length as u64)
+                                .ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "SASL credentials length overflow",
+                                    )
+                                })?;
+                            if sasl_end > bind_end {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "SASL credentials exceed the bind request",
+                                ));
+                            }
+
+                            let mechanism = Self::read_string(&mut cursor)?;
+                            if mechanism.is_empty() {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "SASL mechanism must not be empty",
+                                ));
+                            }
+
+                            let credentials = if cursor.position() < sasl_end {
+                                if cursor.get_u8() != 0x04 {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "Expected OCTET STRING for SASL credentials",
+                                    ));
+                                }
+                                let credentials_length = Self::read_length(&mut cursor)?;
+                                if cursor.remaining() < credentials_length
+                                    || cursor.position() + credentials_length as u64 > sasl_end
+                                {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::UnexpectedEof,
+                                        "SASL credentials exceed their enclosing value",
+                                    ));
+                                }
+                                let mut credentials = vec![0u8; credentials_length];
+                                cursor.copy_to_slice(&mut credentials);
+                                Some(credentials)
+                            } else {
+                                None
+                            };
+
+                            if cursor.position() != sasl_end {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "SASL credentials contain trailing data",
+                                ));
+                            }
+
+                            BindAuthentication::Sasl {
+                                mechanism,
+                                credentials,
+                            }
+                        }
+                        0x89..=0x8B => {
+                            // Microsoft ADSI can use the legacy Sicily package-discovery,
+                            // negotiate, and response choices instead of LDAP SASL. Decode
+                            // the opaque token so the server can return a BindResponse with
+                            // authMethodNotSupported rather than dropping the connection.
+                            let credentials_length = Self::read_length(&mut cursor)?;
+                            if cursor.remaining() < credentials_length
+                                || cursor.position() + credentials_length as u64 > bind_end
+                            {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "Sicily credentials exceed the bind request",
+                                ));
+                            }
+                            let mut credentials = vec![0u8; credentials_length];
+                            cursor.copy_to_slice(&mut credentials);
+                            BindAuthentication::Sicily {
+                                tag: auth_tag,
+                                credentials,
+                            }
+                        }
+                        _ => {
                             return Err(io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                format!(
-                                    "Not enough bytes for password: need {} but only {} available",
-                                    pass_len,
-                                    cursor.remaining()
-                                ),
+                                io::ErrorKind::InvalidData,
+                                format!("Unsupported bind authentication tag: 0x{auth_tag:02x}"),
                             ));
                         }
-                        let mut pass_bytes = vec![0u8; pass_len];
-                        cursor.copy_to_slice(&mut pass_bytes);
-                        let password = String::from_utf8(pass_bytes).map_err(|_| {
-                            io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8")
-                        })?;
-                        BindAuthentication::Simple(password)
-                    } else {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("Unsupported bind authentication tag: 0x{auth_tag:02x}"),
-                        ));
                     }
                 };
+
+                if cursor.position() != bind_end {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Bind request length mismatch",
+                    ));
+                }
 
                 LdapProtocolOp::BindRequest {
                     version,
@@ -1335,6 +1438,98 @@ mod tests {
 
         let error = codec.decode(&mut buf).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn test_decode_sasl_bind_request() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::from(
+            &[
+                0x30, 0x1c, // LDAPMessage sequence
+                0x02, 0x01, 0x01, // message ID
+                0x60, 0x17, // BindRequest
+                0x02, 0x01, 0x03, // LDAP version 3
+                0x04, 0x00, // empty DN
+                0xa3, 0x10, // SASL authentication choice
+                0x04, 0x0a, b'G', b'S', b'S', b'-', b'S', b'P', b'N', b'E', b'G', b'O', 0x04, 0x02,
+                0x01, 0x02, // credentials
+            ][..],
+        );
+
+        let message = codec.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(message.message_id, 1);
+        match message.protocol_op {
+            LdapProtocolOp::BindRequest {
+                version,
+                dn,
+                authentication:
+                    BindAuthentication::Sasl {
+                        mechanism,
+                        credentials,
+                    },
+            } => {
+                assert_eq!(version, 3);
+                assert!(dn.is_empty());
+                assert_eq!(mechanism, "GSS-SPNEGO");
+                assert_eq!(credentials, Some(vec![1, 2]));
+            }
+            other => panic!("Expected SASL BindRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_sasl_bind_request_without_credentials() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::from(
+            &[
+                0x30, 0x18, // LDAPMessage sequence
+                0x02, 0x01, 0x01, // message ID
+                0x60, 0x13, // BindRequest
+                0x02, 0x01, 0x03, // LDAP version 3
+                0x04, 0x00, // empty DN
+                0xa3, 0x0c, // SASL authentication choice
+                0x04, 0x0a, b'G', b'S', b'S', b'-', b'S', b'P', b'N', b'E', b'G', b'O',
+            ][..],
+        );
+
+        let message = codec.decode(&mut buf).unwrap().unwrap();
+        assert!(matches!(
+            message.protocol_op,
+            LdapProtocolOp::BindRequest {
+                authentication: BindAuthentication::Sasl {
+                    ref mechanism,
+                    credentials: None,
+                },
+                ..
+            } if mechanism == "GSS-SPNEGO"
+        ));
+    }
+
+    #[test]
+    fn test_decode_microsoft_sicily_bind_request() {
+        let mut codec = SimpleLdapCodec;
+        let mut buf = BytesMut::from(
+            &[
+                0x30, 0x0f, // LDAPMessage sequence
+                0x02, 0x01, 0x04, // message ID
+                0x60, 0x0a, // BindRequest
+                0x02, 0x01, 0x03, // LDAP version 3
+                0x04, 0x00, // empty DN
+                0x8a, 0x03, 0x01, 0x02, 0x03, // Sicily negotiate token
+            ][..],
+        );
+
+        let message = codec.decode(&mut buf).unwrap().unwrap();
+        assert!(matches!(
+            message.protocol_op,
+            LdapProtocolOp::BindRequest {
+                authentication: BindAuthentication::Sicily {
+                    tag: 0x8a,
+                    ref credentials,
+                },
+                ..
+            } if credentials == &[1, 2, 3]
+        ));
     }
 
     #[test]

@@ -1,8 +1,10 @@
 use ldap3::{LdapConnAsync, LdapError, Scope, SearchEntry};
 use std::io::{Seek, Write};
+use std::net::SocketAddr;
 use std::time::Duration;
 use tempfile::NamedTempFile;
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use yamldap::{Config, Server};
 
 const ORIGINAL_PASSWORD: &str = "original-secret";
@@ -10,6 +12,7 @@ const ROTATED_PASSWORD: &str = "rotated-secret";
 const USER_DN: &str = "uid=test,dc=example,dc=com";
 
 struct TestServer {
+    address: SocketAddr,
     url: String,
     yaml_file: NamedTempFile,
     task: tokio::task::JoinHandle<()>,
@@ -37,6 +40,7 @@ impl TestServer {
         });
 
         Self {
+            address,
             url: format!("ldap://{address}"),
             yaml_file,
             task,
@@ -48,6 +52,38 @@ impl TestServer {
         tokio::spawn(async move { connection.drive().await });
         ldap
     }
+}
+
+async fn read_ldap_frame(stream: &mut TcpStream) -> Vec<u8> {
+    let mut header = [0u8; 2];
+    tokio::time::timeout(Duration::from_secs(2), stream.read_exact(&mut header))
+        .await
+        .expect("LDAP response timed out")
+        .expect("failed to read LDAP response header");
+    assert_eq!(header[0], 0x30, "LDAP response must be a sequence");
+
+    let (content_length, mut frame) = if header[1] & 0x80 == 0 {
+        (header[1] as usize, header.to_vec())
+    } else {
+        let length_octets = (header[1] & 0x7f) as usize;
+        assert!((1..=4).contains(&length_octets));
+        let mut encoded_length = vec![0u8; length_octets];
+        stream.read_exact(&mut encoded_length).await.unwrap();
+        let content_length = encoded_length
+            .iter()
+            .fold(0usize, |length, byte| (length << 8) | *byte as usize);
+        let mut frame = header.to_vec();
+        frame.extend_from_slice(&encoded_length);
+        (content_length, frame)
+    };
+
+    let mut content = vec![0u8; content_length];
+    tokio::time::timeout(Duration::from_secs(2), stream.read_exact(&mut content))
+        .await
+        .expect("LDAP response body timed out")
+        .expect("failed to read LDAP response body");
+    frame.extend_from_slice(&content);
+    frame
 }
 
 impl Drop for TestServer {
@@ -86,6 +122,85 @@ fn assert_access_denied(error: LdapError) {
         LdapError::LdapResult { result } => assert_eq!(result.rc, 50),
         other => panic!("Expected LDAP access-denied result, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unsupported_sasl_bind_returns_an_error_and_keeps_the_connection_open() {
+    let server = TestServer::start(true, false).await;
+    let mut stream = TcpStream::connect(server.address).await.unwrap();
+
+    let sasl_bind = [
+        0x30, 0x18, // LDAPMessage sequence
+        0x02, 0x01, 0x01, // message ID 1
+        0x60, 0x13, // BindRequest
+        0x02, 0x01, 0x03, // LDAP version 3
+        0x04, 0x00, // empty DN
+        0xa3, 0x0c, // SASL authentication choice
+        0x04, 0x0a, b'G', b'S', b'S', b'-', b'S', b'P', b'N', b'E', b'G', b'O',
+    ];
+    stream.write_all(&sasl_bind).await.unwrap();
+
+    let response = read_ldap_frame(&mut stream).await;
+    assert!(response.contains(&0x61), "expected a BindResponse");
+    assert!(
+        response.windows(3).any(|bytes| bytes == [0x0a, 0x01, 0x07]),
+        "expected authMethodNotSupported (7), got {response:02x?}"
+    );
+
+    let anonymous_bind = [
+        0x30, 0x0c, // LDAPMessage sequence
+        0x02, 0x01, 0x02, // message ID 2
+        0x60, 0x07, // BindRequest
+        0x02, 0x01, 0x03, // LDAP version 3
+        0x04, 0x00, // empty DN
+        0x80, 0x00, // empty simple credentials
+    ];
+    stream.write_all(&anonymous_bind).await.unwrap();
+
+    let response = read_ldap_frame(&mut stream).await;
+    assert!(
+        response.windows(3).any(|bytes| bytes == [0x0a, 0x01, 0x00]),
+        "expected a successful anonymous bind, got {response:02x?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unsupported_microsoft_sicily_bind_returns_an_error_and_keeps_the_connection_open() {
+    let server = TestServer::start(true, false).await;
+    let mut stream = TcpStream::connect(server.address).await.unwrap();
+
+    let sicily_bind = [
+        0x30, 0x0f, // LDAPMessage sequence
+        0x02, 0x01, 0x01, // message ID 1
+        0x60, 0x0a, // BindRequest
+        0x02, 0x01, 0x03, // LDAP version 3
+        0x04, 0x00, // empty DN
+        0x8a, 0x03, 0x01, 0x02, 0x03, // Sicily negotiate token
+    ];
+    stream.write_all(&sicily_bind).await.unwrap();
+
+    let response = read_ldap_frame(&mut stream).await;
+    assert!(response.contains(&0x61), "expected a BindResponse");
+    assert!(
+        response.windows(3).any(|bytes| bytes == [0x0a, 0x01, 0x07]),
+        "expected authMethodNotSupported (7), got {response:02x?}"
+    );
+
+    let anonymous_bind = [
+        0x30, 0x0c, // LDAPMessage sequence
+        0x02, 0x01, 0x02, // message ID 2
+        0x60, 0x07, // BindRequest
+        0x02, 0x01, 0x03, // LDAP version 3
+        0x04, 0x00, // empty DN
+        0x80, 0x00, // empty simple credentials
+    ];
+    stream.write_all(&anonymous_bind).await.unwrap();
+
+    let response = read_ldap_frame(&mut stream).await;
+    assert!(
+        response.windows(3).any(|bytes| bytes == [0x0a, 0x01, 0x00]),
+        "expected a successful anonymous bind, got {response:02x?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
