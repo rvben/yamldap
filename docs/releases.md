@@ -21,6 +21,16 @@ starts `.github/workflows/release.yml`.
 and GHCR image. Check Docker Hub separately because it is not currently a
 Vership verification target.
 
+## Publishing access
+
+The `yamldap` crate trusts the GitHub publisher `rvben/yamldap` with workflow
+filename `release.yml`. The publish job exchanges its GitHub OIDC identity for
+a short-lived crates.io token; no long-lived crates.io secret is required.
+
+The `ghcr.io/rvben/yamldap` package grants Actions access to the
+`rvben/yamldap` repository. The workflow uses its scoped `GITHUB_TOKEN` with
+`packages: write`; no personal access token is required.
+
 ## Failure policy
 
 If a release fails before any release, artifact, container, package, checksum,
