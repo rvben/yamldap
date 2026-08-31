@@ -13,7 +13,7 @@ permissions:
 jobs:
   update:
     name: Propose policy-approved updates
-    uses: rvben/upd/.github/workflows/dependency-health.yml@493e20ad77a95c5b2efcc88581886491356e1a1b
+    uses: rvben/upd/.github/workflows/dependency-health.yml@d30a9ce04b028bcfa560a805da6621f7cb7af061
     with:
       langs: rust,actions
       lock: true
