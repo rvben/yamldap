@@ -29,9 +29,9 @@ unstable-internals = []
 
 [dependencies]
 # Async runtime and networking
-tokio = { version = "1.40", features = ["full"] }
+tokio = { version = "1.53", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
-bytes = "1.11.1"
+bytes = "1.12.1"
 futures = "0.3"
 
 # YAML and data processing
@@ -39,7 +39,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml_ng = "0.10"
 
 # CLI and configuration
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 
 # Cryptography and password handling
 bcrypt = "0.15"
@@ -52,7 +52,7 @@ rand = "0.8"
 anyhow = "1.0"
 thiserror = "1.0"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # File watching and utilities
 notify = "6.1"
@@ -60,7 +60,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 criterion = "0.5"
-tempfile = "3.10"
+tempfile = "3.27"
 ldap3 = "0.11"
 
 [[bin]]
