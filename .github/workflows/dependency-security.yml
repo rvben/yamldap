@@ -13,7 +13,7 @@ permissions:
 jobs:
   remediate:
     name: Propose vulnerability fixes
-    uses: rvben/upd/.github/workflows/dependency-remediation.yml@71c7410370982ac94098d2e12f86724c055aef5d # v0.9.1
+    uses: rvben/upd/.github/workflows/dependency-remediation.yml@1a8c9cd6e0e5f21251f89b2bd9f9fcbff776030d # v0.8.5
     with:
       publish: true
       langs: rust
