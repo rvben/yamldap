@@ -29,7 +29,7 @@ unstable-internals = []
 
 [dependencies]
 # Async runtime and networking
-tokio = { version = "1.53", features = ["full"] }
+tokio = { version = "1.53.3", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1.12.1"
 futures = "0.3"
