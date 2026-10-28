@@ -199,17 +199,17 @@ fn parse_syntax(syntax: &str) -> Result<AttributeSyntax, String> {
 
 fn convert_yaml_values(
     name: &str,
-    value: serde_yaml_ng::Value,
+    value: serde_norway::Value,
     declared_syntax: Option<AttributeSyntax>,
 ) -> crate::Result<(Vec<AttributeValue>, AttributeSyntax)> {
     let raw_values = match value {
-        serde_yaml_ng::Value::Sequence(values) if values.is_empty() => {
+        serde_norway::Value::Sequence(values) if values.is_empty() => {
             return Err(crate::YamlLdapError::Config(format!(
                 "Attribute {name} must have at least one value"
             )));
         }
-        serde_yaml_ng::Value::Sequence(values) => values,
-        serde_yaml_ng::Value::Null => {
+        serde_norway::Value::Sequence(values) => values,
+        serde_norway::Value::Null => {
             return Err(crate::YamlLdapError::Config(format!(
                 "Attribute {name} cannot be null"
             )));
@@ -233,35 +233,35 @@ fn convert_yaml_values(
     Ok((values, syntax))
 }
 
-fn infer_syntax(name: &str, values: &[serde_yaml_ng::Value]) -> AttributeSyntax {
+fn infer_syntax(name: &str, values: &[serde_norway::Value]) -> AttributeSyntax {
     match name.to_ascii_lowercase().as_str() {
         "member" | "memberof" | "manager" => AttributeSyntax::Dn,
         "createtimestamp" | "modifytimestamp" => AttributeSyntax::GeneralizedTime,
         _ => match values.first() {
-            Some(serde_yaml_ng::Value::Number(number)) if number.as_i64().is_some() => {
+            Some(serde_norway::Value::Number(number)) if number.as_i64().is_some() => {
                 AttributeSyntax::Integer
             }
-            Some(serde_yaml_ng::Value::Bool(_)) => AttributeSyntax::Boolean,
+            Some(serde_norway::Value::Bool(_)) => AttributeSyntax::Boolean,
             _ => AttributeSyntax::String,
         },
     }
 }
 
 fn convert_yaml_value(
-    value: serde_yaml_ng::Value,
+    value: serde_norway::Value,
     syntax: &AttributeSyntax,
 ) -> Result<AttributeValue, String> {
     match syntax {
         AttributeSyntax::String => match value {
-            serde_yaml_ng::Value::String(value) => Ok(AttributeValue::String(value)),
-            serde_yaml_ng::Value::Number(value) => Ok(AttributeValue::String(value.to_string())),
-            serde_yaml_ng::Value::Bool(value) => Ok(AttributeValue::String(value.to_string())),
+            serde_norway::Value::String(value) => Ok(AttributeValue::String(value)),
+            serde_norway::Value::Number(value) => Ok(AttributeValue::String(value.to_string())),
+            serde_norway::Value::Bool(value) => Ok(AttributeValue::String(value.to_string())),
             _ => Err("expected a scalar string, number, or boolean".to_string()),
         },
         AttributeSyntax::Integer => {
             let integer = match value {
-                serde_yaml_ng::Value::Number(value) => value.as_i64(),
-                serde_yaml_ng::Value::String(value) => value.parse().ok(),
+                serde_norway::Value::Number(value) => value.as_i64(),
+                serde_norway::Value::String(value) => value.parse().ok(),
                 _ => None,
             }
             .ok_or_else(|| "expected a signed 64-bit integer".to_string())?;
@@ -269,11 +269,11 @@ fn convert_yaml_value(
         }
         AttributeSyntax::Boolean => {
             let boolean = match value {
-                serde_yaml_ng::Value::Bool(value) => Some(value),
-                serde_yaml_ng::Value::String(value) if value.eq_ignore_ascii_case("true") => {
+                serde_norway::Value::Bool(value) => Some(value),
+                serde_norway::Value::String(value) if value.eq_ignore_ascii_case("true") => {
                     Some(true)
                 }
-                serde_yaml_ng::Value::String(value) if value.eq_ignore_ascii_case("false") => {
+                serde_norway::Value::String(value) if value.eq_ignore_ascii_case("false") => {
                     Some(false)
                 }
                 _ => None,
@@ -283,7 +283,7 @@ fn convert_yaml_value(
         }
         AttributeSyntax::Binary => {
             let encoded = match value {
-                serde_yaml_ng::Value::String(value) => value,
+                serde_norway::Value::String(value) => value,
                 _ => return Err("expected a base64 string".to_string()),
             };
             let bytes = base64::Engine::decode(
@@ -295,7 +295,7 @@ fn convert_yaml_value(
         }
         AttributeSyntax::Dn => {
             let value = match value {
-                serde_yaml_ng::Value::String(value) => value,
+                serde_norway::Value::String(value) => value,
                 _ => return Err("expected an RFC 4514 DN string".to_string()),
             };
             DistinguishedName::parse(&value).map_err(|error| error.to_string())?;
@@ -303,7 +303,7 @@ fn convert_yaml_value(
         }
         AttributeSyntax::GeneralizedTime => {
             let value = match value {
-                serde_yaml_ng::Value::String(value) => value,
+                serde_norway::Value::String(value) => value,
                 _ => return Err("expected an LDAP generalized time string".to_string()),
             };
             let parsed = chrono::NaiveDateTime::parse_from_str(&value, "%Y%m%d%H%M%SZ")
@@ -443,17 +443,17 @@ mod tests {
             attributes: [
                 (
                     "cn".to_string(),
-                    serde_yaml_ng::Value::String("test".to_string()),
+                    serde_norway::Value::String("test".to_string()),
                 ),
                 (
                     "sn".to_string(),
-                    serde_yaml_ng::Value::String("User".to_string()),
+                    serde_norway::Value::String("User".to_string()),
                 ),
                 (
                     "uid".to_string(),
-                    serde_yaml_ng::Value::Number(serde_yaml_ng::Number::from(12345)),
+                    serde_norway::Value::Number(serde_norway::Number::from(12345)),
                 ),
-                ("active".to_string(), serde_yaml_ng::Value::Bool(true)),
+                ("active".to_string(), serde_norway::Value::Bool(true)),
             ]
             .into_iter()
             .collect(),
@@ -493,14 +493,14 @@ mod tests {
             attributes: [
                 (
                     "cn".to_string(),
-                    serde_yaml_ng::Value::String("test".to_string()),
+                    serde_norway::Value::String("test".to_string()),
                 ),
                 (
                     "member".to_string(),
-                    serde_yaml_ng::Value::Sequence(vec![
-                        serde_yaml_ng::Value::String("cn=user1,dc=example,dc=com".to_string()),
-                        serde_yaml_ng::Value::String("cn=user2,dc=example,dc=com".to_string()),
-                        serde_yaml_ng::Value::Number(serde_yaml_ng::Number::from(123)), // Invalid mixed type
+                    serde_norway::Value::Sequence(vec![
+                        serde_norway::Value::String("cn=user1,dc=example,dc=com".to_string()),
+                        serde_norway::Value::String("cn=user2,dc=example,dc=com".to_string()),
+                        serde_norway::Value::Number(serde_norway::Number::from(123)), // Invalid mixed type
                     ]),
                 ),
             ]
@@ -520,7 +520,7 @@ mod tests {
             object_class: vec!["top".to_string()],
             attributes: [(
                 "score".to_string(),
-                serde_yaml_ng::Value::Number(serde_yaml_ng::Number::from(1.25)),
+                serde_norway::Value::Number(serde_norway::Number::from(1.25)),
             )]
             .into_iter()
             .collect(),
@@ -541,10 +541,10 @@ mod tests {
             dn: "cn=test,dc=example,dc=com".to_string(),
             object_class: vec!["top".to_string()],
             attributes: [
-                ("empty".to_string(), serde_yaml_ng::Value::Null),
+                ("empty".to_string(), serde_norway::Value::Null),
                 (
                     "emptySeq".to_string(),
-                    serde_yaml_ng::Value::Sequence(vec![]),
+                    serde_norway::Value::Sequence(vec![]),
                 ),
             ]
             .into_iter()

@@ -5,11 +5,11 @@ use std::path::Path;
 
 pub async fn parse_directory_file(path: &Path) -> crate::Result<(YamlDirectory, YamlSchema)> {
     let content = tokio::fs::read_to_string(path).await?;
-    // Materialize a Value first: serde_yaml_ng's Mapping rejects duplicate
+    // Materialize a Value first: serde_norway's Mapping rejects duplicate
     // keys, while deserializing directly into HashMap-backed fields can hide
     // an earlier occurrence.
-    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&content)?;
-    let yaml_dir: YamlDirectory = serde_yaml_ng::from_value(document)?;
+    let document: serde_norway::Value = serde_norway::from_str(&content)?;
+    let yaml_dir: YamlDirectory = serde_norway::from_value(document)?;
 
     // Validate base DN
     if yaml_dir.directory.base_dn.is_empty() {
@@ -453,7 +453,7 @@ entries:
         let mut attrs = HashMap::new();
         attrs.insert(
             "cn".to_string(),
-            serde_yaml_ng::Value::String("test".to_string()),
+            serde_norway::Value::String("test".to_string()),
         );
 
         let entries = vec![YamlEntry {

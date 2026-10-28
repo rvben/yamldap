@@ -32,7 +32,7 @@ pub mod unstable {
 #[non_exhaustive]
 pub enum YamlLdapError {
     #[error("YAML parsing error: {0}")]
-    YamlParse(#[from] serde_yaml_ng::Error),
+    YamlParse(#[from] serde_norway::Error),
 
     #[error("LDAP protocol error: {0}")]
     Protocol(String),

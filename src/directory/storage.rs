@@ -499,7 +499,7 @@ mod tests {
                 object_class: vec!["person".to_string()],
                 attributes: [(
                     "cn".to_string(),
-                    serde_yaml_ng::Value::String("test".to_string()),
+                    serde_norway::Value::String("test".to_string()),
                 )]
                 .into_iter()
                 .collect(),
@@ -574,7 +574,7 @@ mod tests {
                         let mut attrs = HashMap::new();
                         attrs.insert(
                             "dc".to_string(),
-                            serde_yaml_ng::Value::String("example".to_string()),
+                            serde_norway::Value::String("example".to_string()),
                         );
                         attrs
                     },
@@ -586,7 +586,7 @@ mod tests {
                         let mut attrs = HashMap::new();
                         attrs.insert(
                             "cn".to_string(),
-                            serde_yaml_ng::Value::String("admin".to_string()),
+                            serde_norway::Value::String("admin".to_string()),
                         );
                         attrs
                     },

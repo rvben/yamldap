@@ -54,7 +54,7 @@ pub struct YamlEntry {
     #[serde(rename = "objectClass")]
     pub object_class: Vec<String>,
     #[serde(flatten)]
-    pub attributes: HashMap<String, serde_yaml_ng::Value>,
+    pub attributes: HashMap<String, serde_norway::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

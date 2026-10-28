@@ -81,7 +81,7 @@ fn update_context_root_naming_attributes(
             .cloned();
         entry.attributes.insert(
             existing_name.unwrap_or_else(|| ava.attribute().to_string()),
-            serde_yaml_ng::Value::String(value.to_string()),
+            serde_norway::Value::String(value.to_string()),
         );
     }
     Ok(())
@@ -108,14 +108,14 @@ fn attribute_has_dn_syntax(attribute: &str, schema: &YamlSchema) -> bool {
 }
 
 fn relocate_dn_values(
-    value: &mut serde_yaml_ng::Value,
+    value: &mut serde_norway::Value,
     old_base: &DistinguishedName,
     new_base: &DistinguishedName,
     attribute: &str,
     entry_dn: &str,
 ) -> crate::Result<()> {
     match value {
-        serde_yaml_ng::Value::String(value) => {
+        serde_norway::Value::String(value) => {
             let parsed = DistinguishedName::parse(value).map_err(|error| {
                 YamlLdapError::Config(format!(
                     "Entry {entry_dn} attribute {attribute} has an invalid DN value: {error}"
@@ -126,7 +126,7 @@ fn relocate_dn_values(
             }
             Ok(())
         }
-        serde_yaml_ng::Value::Sequence(values) => {
+        serde_norway::Value::Sequence(values) => {
             for value in values {
                 relocate_dn_values(value, old_base, new_base, attribute, entry_dn)?;
             }
@@ -169,7 +169,7 @@ entries:
 
     #[test]
     fn relocates_entries_and_in_context_dn_values() {
-        let raw: YamlDirectory = serde_yaml_ng::from_str(source()).unwrap();
+        let raw: YamlDirectory = serde_norway::from_str(source()).unwrap();
         let directory =
             compile_directory(raw, YamlSchema::default(), Some("dc=relocated,dc=internal"))
                 .unwrap();
@@ -197,7 +197,7 @@ entries:
 
     #[test]
     fn rejects_entry_outside_source_base_during_relocation() {
-        let mut raw: YamlDirectory = serde_yaml_ng::from_str(source()).unwrap();
+        let mut raw: YamlDirectory = serde_norway::from_str(source()).unwrap();
         raw.entries[0].dn = "dc=other,dc=org".to_string();
         let error =
             compile_directory(raw, YamlSchema::default(), Some("dc=new,dc=org")).unwrap_err();
@@ -206,7 +206,7 @@ entries:
 
     #[test]
     fn rejects_duplicate_semantic_dns() {
-        let mut raw: YamlDirectory = serde_yaml_ng::from_str(source()).unwrap();
+        let mut raw: YamlDirectory = serde_norway::from_str(source()).unwrap();
         raw.entries.push(raw.entries[0].clone());
         raw.entries.last_mut().unwrap().dn = "DC=EXAMPLE,DC=COM".to_string();
         let error = compile_directory(raw, YamlSchema::default(), None).unwrap_err();
@@ -215,12 +215,12 @@ entries:
 
     #[test]
     fn enforces_single_valued_schema_attributes() {
-        let mut raw: YamlDirectory = serde_yaml_ng::from_str(source()).unwrap();
+        let mut raw: YamlDirectory = serde_norway::from_str(source()).unwrap();
         raw.entries[0].attributes.insert(
             "serial".to_string(),
-            serde_yaml_ng::Value::Sequence(vec![
-                serde_yaml_ng::Value::String("one".to_string()),
-                serde_yaml_ng::Value::String("two".to_string()),
+            serde_norway::Value::Sequence(vec![
+                serde_norway::Value::String("one".to_string()),
+                serde_norway::Value::String("two".to_string()),
             ]),
         );
         let mut schema = YamlSchema::default();
