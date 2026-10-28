@@ -19,3 +19,9 @@ test_command = "make test"
 
 [verify]
 image = "rvben/yamldap"
+
+# Keep the local package version in the independently locked fuzz workspace in sync.
+[[version_files]]
+glob = "fuzz/Cargo.lock"
+search = "name = \"yamldap\"\nversion = \"{prev}\""
+replace = "name = \"yamldap\"\nversion = \"{version}\""
