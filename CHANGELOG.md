@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **deps**: replace unmaintained YAML parser and patch Tokio ([0b67876](https://github.com/rvben/yamldap/commit/0b67876dad855d6e69662e40a7ee15bd1d537e5b))
+- **release**: synchronize the fuzz workspace version ([39d74b5](https://github.com/rvben/yamldap/commit/39d74b54159a0825f7ad6628d44fef5b90a4a05d))
 
 ## [0.2.0](https://github.com/rvben/yamldap/compare/v0.1.6...v0.2.0) - 2026-08-29
 
