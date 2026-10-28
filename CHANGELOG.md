@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rvben/yamldap/compare/v0.2.0...v0.2.1) - 2026-10-28
+
+### Fixed
+
+- **deps**: replace unmaintained YAML parser and patch Tokio ([0b67876](https://github.com/rvben/yamldap/commit/0b67876dad855d6e69662e40a7ee15bd1d537e5b))
+
 ## [0.2.0](https://github.com/rvben/yamldap/compare/v0.1.6...v0.2.0) - 2026-08-29
 
 ### Added
