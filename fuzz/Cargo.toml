@@ -10,7 +10,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-arbitrary = { version = "1.4", features = ["derive"] }
+arbitrary = { version = "1.5", features = ["derive"] }
 bytes = "1.12"
 tokio-util = { version = "0.7", features = ["codec"] }
 
