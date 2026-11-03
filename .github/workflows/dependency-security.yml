@@ -13,7 +13,7 @@ permissions:
 jobs:
   remediate:
     name: Propose vulnerability fixes
-    uses: rvben/upd/.github/workflows/dependency-remediation.yml@b015afc2c81f52fbffd862469203c076e32e6edf # v0.14.3
+    uses: rvben/upd/.github/workflows/dependency-remediation.yml@b183939ff7dc62539afb00b3c555ffbfe3c5d58b # v0.18.2
     with:
       publish: true
       langs: rust
@@ -22,4 +22,5 @@ jobs:
       validation-command: make fmt-check check lint test docs-check
       branch: security/upd-dependencies
       commit-message: "fix(deps): remediate vulnerable dependencies with upd"
-      auto-merge: false
+      auto-merge: true
+      merge-method: squash
