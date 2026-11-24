@@ -13,6 +13,12 @@ pub enum AttributeSyntax {
     GeneralizedTime,
 }
 
+const GENERALIZED_TIME_FORMAT: &str = "%Y%m%d%H%M%SZ";
+
+fn format_generalized_time(time: &jiff::Timestamp) -> String {
+    time.strftime(GENERALIZED_TIME_FORMAT).to_string()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AttributeValue {
     String(String),
@@ -20,7 +26,7 @@ pub enum AttributeValue {
     Boolean(bool),
     Binary(Vec<u8>),
     Dn(String),
-    GeneralizedTime(chrono::DateTime<chrono::Utc>),
+    GeneralizedTime(jiff::Timestamp),
 }
 
 impl AttributeValue {
@@ -33,7 +39,7 @@ impl AttributeValue {
                 base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b)
             }
             AttributeValue::Dn(dn) => dn.clone(),
-            AttributeValue::GeneralizedTime(dt) => dt.format("%Y%m%d%H%M%SZ").to_string(),
+            AttributeValue::GeneralizedTime(dt) => format_generalized_time(dt),
         }
     }
 
@@ -45,9 +51,7 @@ impl AttributeValue {
             AttributeValue::Boolean(b) => b.to_string().as_bytes().to_vec(),
             AttributeValue::Binary(b) => b.clone(),
             AttributeValue::Dn(dn) => dn.as_bytes().to_vec(),
-            AttributeValue::GeneralizedTime(dt) => {
-                dt.format("%Y%m%d%H%M%SZ").to_string().as_bytes().to_vec()
-            }
+            AttributeValue::GeneralizedTime(dt) => format_generalized_time(dt).into_bytes(),
         }
     }
 }
@@ -306,9 +310,10 @@ fn convert_yaml_value(
                 serde_norway::Value::String(value) => value,
                 _ => return Err("expected an LDAP generalized time string".to_string()),
             };
-            let parsed = chrono::NaiveDateTime::parse_from_str(&value, "%Y%m%d%H%M%SZ")
+            let parsed = jiff::civil::DateTime::strptime(GENERALIZED_TIME_FORMAT, &value)
+                .and_then(|civil| civil.to_zoned(jiff::tz::TimeZone::UTC))
                 .map_err(|_| "expected generalized time in YYYYmmddHHMMSSZ form".to_string())?
-                .and_utc();
+                .timestamp();
             Ok(AttributeValue::GeneralizedTime(parsed))
         }
     }
@@ -317,8 +322,6 @@ fn convert_yaml_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
-
     #[test]
     fn test_attribute_value_as_string() {
         assert_eq!(
@@ -340,9 +343,7 @@ mod tests {
             base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &binary_data)
         );
 
-        let dt = chrono::Utc
-            .with_ymd_and_hms(2023, 12, 25, 10, 30, 0)
-            .unwrap();
+        let dt = "2023-12-25T10:30:00Z".parse::<jiff::Timestamp>().unwrap();
         assert_eq!(
             AttributeValue::GeneralizedTime(dt).as_string(),
             "20231225103000Z"
@@ -369,9 +370,7 @@ mod tests {
             binary_data
         );
 
-        let dt = chrono::Utc
-            .with_ymd_and_hms(2023, 12, 25, 10, 30, 0)
-            .unwrap();
+        let dt = "2023-12-25T10:30:00Z".parse::<jiff::Timestamp>().unwrap();
         assert_eq!(
             AttributeValue::GeneralizedTime(dt).as_bytes(),
             b"20231225103000Z".to_vec()
@@ -743,5 +742,49 @@ mod tests {
             entry.get_attribute("allbytes").unwrap().values[0].as_bytes(),
             all_bytes.as_slice()
         );
+    }
+
+    #[test]
+    fn test_generalized_time_parses_and_round_trips() {
+        let value = convert_yaml_value(
+            serde_norway::Value::String("20231225103000Z".to_string()),
+            &AttributeSyntax::GeneralizedTime,
+        )
+        .unwrap();
+        assert_eq!(
+            value,
+            AttributeValue::GeneralizedTime("2023-12-25T10:30:00Z".parse().unwrap())
+        );
+        assert_eq!(value.as_string(), "20231225103000Z");
+
+        let leap_day = convert_yaml_value(
+            serde_norway::Value::String("20240229235959Z".to_string()),
+            &AttributeSyntax::GeneralizedTime,
+        )
+        .unwrap();
+        assert_eq!(leap_day.as_string(), "20240229235959Z");
+    }
+
+    #[test]
+    fn test_generalized_time_rejects_malformed_values() {
+        for invalid in [
+            "20231225103000",
+            "20231325103000Z",
+            "20230229103000Z",
+            "20231225253000Z",
+            "20231225103000+0100",
+            "2023-12-25T10:30:00Z",
+            "",
+        ] {
+            let result = convert_yaml_value(
+                serde_norway::Value::String(invalid.to_string()),
+                &AttributeSyntax::GeneralizedTime,
+            );
+            assert_eq!(
+                result,
+                Err("expected generalized time in YYYYmmddHHMMSSZ form".to_string()),
+                "{invalid:?} must be rejected"
+            );
+        }
     }
 }

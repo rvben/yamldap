@@ -56,7 +56,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # File watching and utilities
 notify = "6.1"
-chrono = { version = "0.4", features = ["serde"] }
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 criterion = "0.5"
