@@ -1,4 +1,4 @@
-.PHONY: all audit build build-target build-all-targets check ci clean docs-check \
+.PHONY: all audit lint-actions build build-target build-all-targets check ci clean docs-check \
 	docker-build docker-buildx docker-compose-registry docker-compose-up docker-login \
 	docker-push docker-push-dockerhub docker-run docker-setup docker-stop fmt fmt-check \
 	help lint package-check publish-crate publish-crate-dry release release-check \
@@ -169,6 +169,10 @@ docs-check:
 # Verify the exact package Cargo would upload.
 package-check:
 	cargo publish --locked --dry-run
+
+# Lint the GitHub Actions workflows at medium severity and above.
+lint-actions:
+	uvx zizmor@1.33.1 --min-severity=medium .github/workflows/
 
 # Check the locked dependency graph against the RustSec advisory database.
 audit:
