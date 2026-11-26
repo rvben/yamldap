@@ -4,14 +4,6 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-    # RUSTSEC-2026-0441: pin-utils is unmaintained and has no patched release.
-    # It is a transitive dependency of futures-util 0.3.31, the newest release,
-    # so only an upstream futures release can remove it. Mirrors the entry in
-    # .cargo/audit.toml.
-    # Review by 2027-02-24: drop this entry once futures-util stops using it.
-    { id = "RUSTSEC-2026-0441", reason = "unmaintained transitive dependency of futures-util with no patched release" },
-]
 
 [licenses]
 version = 2
